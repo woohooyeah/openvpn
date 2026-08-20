@@ -169,10 +169,12 @@ parse_hexstring(const char *p, unsigned char *arr, DWORD capacity)
             break;
         }
 
-        if (!isxdigit(p[0]) || !isxdigit(p[1]) || sscanf(p, "%2hhx", &arr[i++]) != 1)
+        unsigned int b;
+        if (!isxdigit(p[0]) || !isxdigit(p[1]) || sscanf(p, "%2x", &b) != 1)
         {
             return 0;
         }
+        arr[i++] = (unsigned char)b;
     }
     return i;
 }
@@ -235,7 +237,7 @@ test_certificate_template(const char *cert_prop, const CERT_CONTEXT *cert_ctx)
         if (pvext && cbext >= sizeof(CERT_TEMPLATE_EXT))
         {
             const CERT_TEMPLATE_EXT *cte = (const CERT_TEMPLATE_EXT *)pvext;
-            if (!stricmp(cert_prop, cte->pszObjId))
+            if (!_stricmp(cert_prop, cte->pszObjId))
             {
                 /* found direct OID match with certificate property specified */
                 gc_free(&gc);
@@ -244,7 +246,7 @@ test_certificate_template(const char *cert_prop, const CERT_CONTEXT *cert_ctx)
 
             const CRYPT_OID_INFO *tmpl_oid =
                 find_oid(CRYPT_OID_INFO_NAME_KEY, tmpl_name, CRYPT_TEMPLATE_OID_GROUP_ID);
-            if (tmpl_oid && !stricmp(tmpl_oid->pszOID, cte->pszObjId))
+            if (tmpl_oid && !_stricmp(tmpl_oid->pszOID, cte->pszObjId))
             {
                 /* found OID match in extension against resolved key */
                 gc_free(&gc);

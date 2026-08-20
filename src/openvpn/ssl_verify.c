@@ -868,7 +868,8 @@ check_auth_pending_method(const char *peer_info, const char *method)
         return false;
     }
 
-    const char *client_method = strtok(iv_sso, ",");
+    char *lasts = NULL;
+    const char *client_method = strtok_r(iv_sso, ",", &lasts);
     bool supported = false;
 
     while (client_method)
@@ -878,7 +879,7 @@ check_auth_pending_method(const char *peer_info, const char *method)
             supported = true;
             break;
         }
-        client_method = strtok(NULL, ",");
+        client_method = strtok_r(NULL, ",", &lasts);
     }
 
     gc_free(&gc);
@@ -922,8 +923,9 @@ key_state_check_auth_pending_file(struct auth_deferred_status *ads,
             buf_chomp(iv_buf);
             buf_chomp(extra_buf);
 
+            errno = 0;
             long timeout = strtol(BSTR(timeout_buf), NULL, 10);
-            if (timeout <= 0)
+            if (timeout <= 0 || (unsigned long)timeout > UINT_MAX || errno)
             {
                 msg(M_WARN, "could not parse auth pending file timeout");
                 buffer_list_free(lines);
@@ -1650,10 +1652,10 @@ verify_user_pass(struct user_pass *up, struct tls_multi *multi, struct tls_sessi
     {
         ks->auth_token_state_flags = verify_auth_token(up, multi, session);
 
-        /* If this is the first time we see an auth-token in this multi session,
-         * save it as initial auth token. This ensures using the
-         * same session ID and initial timestamp in new tokens */
-        if (!multi->auth_token_initial)
+        /* If this is a valid token and the first time we see an auth-token
+         * in this multi session, save it as initial auth token. This ensures
+         * using the same session ID and initial timestamp in new tokens */
+        if (!multi->auth_token_initial && (ks->auth_token_state_flags & AUTH_TOKEN_HMAC_OK))
         {
             multi->auth_token_initial = strdup(up->password);
         }

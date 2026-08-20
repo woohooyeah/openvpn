@@ -54,6 +54,7 @@
  */
 
 typedef uint16_t packet_size_type;
+#define PACKET_SIZE_MAX UINT16_MAX
 
 /* convert a packet_size_type from host to network order */
 #define htonps(x) htons(x)
@@ -207,7 +208,7 @@ struct link_socket
     int mtu; /* OS discovered MTU, or 0 if unknown */
 
 #define SF_USE_IP_PKTINFO    (1 << 0)
-#define SF_TCP_NODELAY       (1 << 1)
+#define SF_TCP_NODELAY       (1 << 1) /* unused: flag always enabled */
 #define SF_PORT_SHARE        (1 << 2)
 #define SF_HOST_RANDOMIZE    (1 << 3)
 #define SF_GETADDRINFO_DGRAM (1 << 4)
@@ -365,7 +366,9 @@ void do_preresolve(struct context *c);
 
 void link_socket_close(struct link_socket *sock);
 
+#ifdef ENABLE_MANAGEMENT
 void sd_close(socket_descriptor_t *sd);
+#endif
 
 void bad_address_length(int actual, int expected);
 
@@ -389,8 +392,6 @@ void set_actual_address(struct link_socket_actual *actual, struct addrinfo *ai);
 void link_socket_bad_outgoing_addr(void);
 
 void setenv_trusted(struct env_set *es, const struct link_socket_info *info);
-
-bool link_socket_update_flags(struct link_socket *sock, unsigned int sockflags);
 
 void link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int sndbuf);
 
@@ -459,7 +460,7 @@ socket_foreign_protocol_sd(const struct link_socket *sock)
 #endif /* if PORT_SHARE */
 
 static inline bool
-socket_connection_reset(const struct link_socket *sock, int status)
+socket_connection_reset(const struct link_socket *sock, ssize_t status)
 {
     if (link_socket_connection_oriented(sock))
     {
@@ -586,7 +587,7 @@ socket_is_dco_win(const struct link_socket *s)
  * Socket Read Routines
  */
 
-int link_socket_read_tcp(struct link_socket *sock, struct buffer *buf);
+ssize_t link_socket_read_tcp(struct link_socket *sock, struct buffer *buf);
 
 #ifdef _WIN32
 
@@ -606,20 +607,20 @@ link_socket_read_udp_win32(struct link_socket *sock, struct buffer *buf,
 
 #else  /* ifdef _WIN32 */
 
-int link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
-                               struct link_socket_actual *from);
+ssize_t link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
+                                   struct link_socket_actual *from);
 
 #endif /* ifdef _WIN32 */
 
 /* read a TCP or UDP packet from link */
-static inline int
+static inline ssize_t
 link_socket_read(struct link_socket *sock, struct buffer *buf, struct link_socket_actual *from)
 {
     if (proto_is_udp(sock->info.proto) || socket_is_dco_win(sock))
     /* unified UDPv4 and UDPv6, for DCO-WIN the kernel
      * will strip the length header */
     {
-        int res;
+        ssize_t res;
 
 #ifdef _WIN32
         res = link_socket_read_udp_win32(sock, buf, from);

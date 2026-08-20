@@ -53,6 +53,7 @@
 #include "mudp.h"
 #include "dco.h"
 #include "tun_afunix.h"
+#include "schedule.h"
 
 #include "memdbg.h"
 
@@ -325,11 +326,6 @@ management_callback_remote_entry_count(void *arg)
     return l->len;
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-compare"
-#endif
-
 static bool
 management_callback_remote_entry_get(void *arg, unsigned int index, char **remote)
 {
@@ -340,7 +336,7 @@ management_callback_remote_entry_get(void *arg, unsigned int index, char **remot
     struct connection_list *l = c->options.connection_list;
     bool ret = true;
 
-    if (index < l->len)
+    if (l->len > 0 && index < (unsigned int)l->len)
     {
         struct connection_entry *ce = l->array[index];
         const char *proto = proto2ascii(ce->proto, ce->af, false);
@@ -363,10 +359,6 @@ management_callback_remote_entry_get(void *arg, unsigned int index, char **remot
 
     return ret;
 }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 static bool
 management_callback_remote_cmd(void *arg, const char **p)
@@ -466,7 +458,6 @@ ce_management_query_remote(struct context *c)
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wsign-compare"
 #endif
 
 /*
@@ -638,8 +629,8 @@ next_connection_entry(struct context *c)
     } while (!ce_defined);
 
     /* Check if this connection attempt would bring us over the limit */
-    if (c->options.connect_retry_max > 0
-        && c->options.unsuccessful_attempts > (l->len * c->options.connect_retry_max))
+    int max_attempts = l->len * c->options.connect_retry_max;
+    if (max_attempts > 0 && c->options.unsuccessful_attempts > (unsigned int)max_attempts)
     {
         msg(M_FATAL, "All connections have been connect-retry-max (%d) times unsuccessful, exiting",
             c->options.connect_retry_max);
@@ -837,11 +828,6 @@ init_port_share(struct context *c)
 bool
 init_static(void)
 {
-#if defined(DMALLOC)
-    crypto_init_dmalloc();
-#endif
-
-
     /*
      * Initialize random number seed.  random() is only used
      * when "weak" random numbers are acceptable.
@@ -875,11 +861,6 @@ init_static(void)
     update_time();
 
     init_ssl_lib();
-
-#ifdef SCHEDULE_TEST
-    schedule_test();
-    return false;
-#endif
 
 #ifdef IFCONFIG_POOL_TEST
     ifconfig_pool_test(0x0A010004, 0x0A0100FF);
@@ -2176,7 +2157,7 @@ options_hash_changed_or_zero(const struct sha256_digest *a, const struct sha256_
 static void
 add_delim_if_non_empty(struct buffer *buf, const char *header)
 {
-    if (buf_len(buf) > strlen(header))
+    if (BLENZ(buf) > strlen(header))
     {
         buf_printf(buf, ", ");
     }
@@ -2207,9 +2188,10 @@ tls_print_deferred_options_results(struct context *c)
                    md_kt_name(o->authname));
     }
 
-    if (o->use_peer_id)
+    if (c->c2.tls_multi && c->c2.tls_multi->use_peer_id)
     {
-        buf_printf(&out, ", peer-id: %d", o->peer_id);
+        buf_printf(&out, ", rx-peer-id: %u, tx-peer-id: %u", c->c2.tls_multi->rx_peer_id,
+                   c->c2.tls_multi->tx_peer_id);
     }
 
 #ifdef USE_COMP
@@ -2264,7 +2246,7 @@ tls_print_deferred_options_results(struct context *c)
         buf_printf(&out, "session-timeout %d", o->session_timeout);
     }
 
-    if (buf_len(&out) > strlen(header))
+    if (BLENZ(&out) > strlen(header))
     {
         msg(D_HANDSHAKE, "%s", BSTR(&out));
     }
@@ -2301,7 +2283,7 @@ tls_print_deferred_options_results(struct context *c)
         }
     }
 
-    if (buf_len(&out) > strlen(header))
+    if (BLENZ(&out) > strlen(header))
     {
         msg(D_HANDSHAKE, "%s", BSTR(&out));
     }
@@ -2325,6 +2307,11 @@ do_deferred_options_part2(struct context *c)
         frame_fragment = &c->c2.frame_fragment;
     }
 #endif
+
+    /* The peer-id can also be negotiated without being pushed, so sync the
+     * option before the frame is recalculated: it decides whether the
+     * DATA_V2 header is accounted for */
+    c->options.use_peer_id = c->c2.tls_multi->use_peer_id;
 
     struct tls_session *session = &c->c2.tls_multi->session[TM_ACTIVE];
     if (!tls_session_update_crypto_params(c->c2.tls_multi, session, &c->options, &c->c2.frame,
@@ -2650,15 +2637,6 @@ do_deferred_options(struct context *c, const uint64_t found, const bool is_updat
         }
     }
 
-    if (found & OPT_P_SOCKFLAGS)
-    {
-        msg(D_PUSH, "OPTIONS IMPORT: --socket-flags option modified");
-        for (int i = 0; i < c->c1.link_sockets_num; i++)
-        {
-            link_socket_update_flags(c->c2.link_sockets[i], c->options.sockflags);
-        }
-    }
-
     if (found & OPT_P_PERSIST)
     {
         msg(D_PUSH, "OPTIONS IMPORT: --persist options modified");
@@ -2688,7 +2666,8 @@ do_deferred_options(struct context *c, const uint64_t found, const bool is_updat
     {
         msg(D_PUSH_DEBUG, "OPTIONS IMPORT: peer-id set");
         c->c2.tls_multi->use_peer_id = true;
-        c->c2.tls_multi->peer_id = c->options.peer_id;
+        c->c2.tls_multi->tx_peer_id = c->options.peer_id;
+        c->c2.tls_multi->rx_peer_id = c->options.peer_id;
     }
 
     /* process (potentially) pushed options */
@@ -2715,7 +2694,7 @@ do_deferred_options(struct context *c, const uint64_t found, const bool is_updat
     /* Ensure that for epoch data format is only enabled if also data v2
      * is enabled */
     bool epoch_data = c->options.imported_protocol_flags & CO_EPOCH_DATA_KEY_FORMAT;
-    bool datav2_enabled = c->options.use_peer_id && c->options.peer_id < MAX_PEER_ID;
+    bool datav2_enabled = c->c2.tls_multi->use_peer_id && c->c2.tls_multi->tx_peer_id < MAX_PEER_ID;
 
     if (epoch_data && !datav2_enabled)
     {
@@ -3343,7 +3322,7 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
 
     /* should we not xmit any packets until we get an initial
      * response from client? */
-    if (to.server && c->mode == CM_CHILD_TCP)
+    if (to.server && (c->mode == CM_CHILD_TCP || (c->mode == CM_P2P && options->ce.proto == PROTO_TCP_SERVER)))
     {
         to.xmit_hold = true;
     }
@@ -3475,7 +3454,7 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     if (flags & CF_INIT_TLS_AUTH_STANDALONE)
     {
         c->c2.tls_auth_standalone = tls_auth_standalone_init(&to, &c->c2.gc);
-        c->c2.session_id_hmac = session_id_hmac_init();
+        siphash_key_init(c->c2.session_id_key);
     }
 }
 

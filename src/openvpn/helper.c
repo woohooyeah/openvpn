@@ -99,14 +99,6 @@ print_str_int(const char *str, const int i, struct gc_arena *gc)
     return BSTR(&out);
 }
 
-static const char *
-print_str(const char *str, struct gc_arena *gc)
-{
-    struct buffer out = alloc_buf_gc(128, gc);
-    buf_printf(&out, "%s", str);
-    return BSTR(&out);
-}
-
 static void
 helper_add_route(const in_addr_t network, const in_addr_t netmask, struct options *o)
 {
@@ -552,20 +544,22 @@ helper_keepalive(struct options *o)
         /*
          * Sanity checks.
          */
-        if (o->keepalive_ping <= 0 || o->keepalive_timeout <= 0)
-        {
-            msg(M_USAGE, "--keepalive parameters must be > 0");
-        }
         if (o->keepalive_ping * 2 > o->keepalive_timeout)
         {
             msg(M_USAGE,
-                "the second parameter to --keepalive (restart timeout=%d) must be at least twice the value of the first parameter (ping interval=%d).  A ratio of 1:5 or 1:6 would be even better.  Recommended setting is --keepalive 10 60.",
+                "The second parameter to --keepalive (restart timeout=%d) must be at least twice the value of the first parameter (ping interval=%d).  A ratio of 1:5 or 1:6 would be even better.  Recommended setting is --keepalive 10 60.",
                 o->keepalive_timeout, o->keepalive_ping);
         }
         if (o->ping_send_timeout || o->ping_rec_timeout)
         {
             msg(M_USAGE,
                 "--keepalive conflicts with --ping, --ping-exit, or --ping-restart.  If you use --keepalive, you don't need any of the other --ping directives.");
+        }
+        if (o->mode == MODE_SERVER && o->keepalive_timeout > PING_TIMEOUT_MAX / 2)
+        {
+            msg(M_USAGE,
+                "The second parameter to --keepalive must not exceed %d in server mode.",
+                PING_TIMEOUT_MAX / 2);
         }
 
         /*
@@ -601,22 +595,13 @@ helper_keepalive(struct options *o)
  * EXPANDS TO:
  *
  * if mode server:
- *   socket-flags TCP_NODELAY
  *   push "socket-flags TCP_NODELAY"
  */
 void
 helper_tcp_nodelay(struct options *o)
 {
-    if (o->server_flags & SF_TCP_NODELAY_HELPER)
+    if ((o->server_flags & SF_TCP_NODELAY_HELPER) && o->mode == MODE_SERVER)
     {
-        if (o->mode == MODE_SERVER)
-        {
-            o->sockflags |= SF_TCP_NODELAY;
-            push_option(o, print_str("socket-flags TCP_NODELAY", &o->gc), M_USAGE);
-        }
-        else
-        {
-            o->sockflags |= SF_TCP_NODELAY;
-        }
+        push_option(o, "socket-flags TCP_NODELAY", M_USAGE);
     }
 }

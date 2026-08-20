@@ -43,7 +43,7 @@ array_mult_safe(const size_t m1, const size_t m2, const size_t extra)
     unsigned long long res =
         (unsigned long long)m1 * (unsigned long long)m2 + (unsigned long long)extra;
     if (unlikely(m1 > limit) || unlikely(m2 > limit) || unlikely(extra > limit)
-        || unlikely(res > (unsigned long long)limit))
+        || unlikely(res > limit))
     {
         msg(M_FATAL, "attempted allocation of excessively large array");
     }
@@ -57,51 +57,34 @@ buf_size_error(const size_t size)
 }
 
 struct buffer
-#ifdef DMALLOC
-alloc_buf_debug(size_t size, const char *file, int line)
-#else
 alloc_buf(size_t size)
-#endif
 {
     struct buffer buf;
+    CLEAR(buf);
 
     if (!buf_size_valid(size))
     {
         buf_size_error(size);
     }
     buf.capacity = (int)size;
-    buf.offset = 0;
-    buf.len = 0;
-#ifdef DMALLOC
-    buf.data = openvpn_dmalloc(file, line, size);
-#else
     buf.data = calloc(1, size);
-#endif
     check_malloc_return(buf.data);
 
     return buf;
 }
 
 struct buffer
-#ifdef DMALLOC
-alloc_buf_gc_debug(size_t size, struct gc_arena *gc, const char *file, int line)
-#else
 alloc_buf_gc(size_t size, struct gc_arena *gc)
-#endif
 {
     struct buffer buf;
+    CLEAR(buf);
+
     if (!buf_size_valid(size))
     {
         buf_size_error(size);
     }
     buf.capacity = (int)size;
-    buf.offset = 0;
-    buf.len = 0;
-#ifdef DMALLOC
-    buf.data = (uint8_t *)gc_malloc_debug(size, false, gc, file, line);
-#else
     buf.data = (uint8_t *)gc_malloc(size, false, gc);
-#endif
     if (size)
     {
         *buf.data = 0;
@@ -110,7 +93,7 @@ alloc_buf_gc(size_t size, struct gc_arena *gc)
 }
 
 struct buffer
-#ifdef DMALLOC
+#ifdef BUF_INIT_TRACKING
 clone_buf_debug(const struct buffer *buf, const char *file, int line)
 #else
 clone_buf(const struct buffer *buf)
@@ -120,11 +103,11 @@ clone_buf(const struct buffer *buf)
     ret.capacity = buf->capacity;
     ret.offset = buf->offset;
     ret.len = buf->len;
-#ifdef DMALLOC
-    ret.data = (uint8_t *)openvpn_dmalloc(file, line, buf->capacity);
-#else
-    ret.data = (uint8_t *)malloc(buf->capacity);
+#ifdef BUF_INIT_TRACKING
+    ret.debug_file = buf->debug_file;
+    ret.debug_line = buf->debug_line;
 #endif
+    ret.data = (uint8_t *)malloc(buf->capacity);
     check_malloc_return(ret.data);
     memcpy(BPTR(&ret), BPTR(buf), BLENZ(buf));
     return ret;
@@ -140,6 +123,7 @@ buf_init_debug(struct buffer *buf, int offset, const char *file, int line)
     return buf_init_dowork(buf, offset);
 }
 
+#ifdef VERIFY_ALIGNMENT
 static inline int
 buf_debug_line(const struct buffer *buf)
 {
@@ -151,6 +135,7 @@ buf_debug_file(const struct buffer *buf)
 {
     return buf->debug_file;
 }
+#endif
 
 #else /* ifdef BUF_INIT_TRACKING */
 
@@ -330,21 +315,13 @@ cleanup:
  */
 
 void *
-#ifdef DMALLOC
-gc_malloc_debug(size_t size, bool clear, struct gc_arena *a, const char *file, int line)
-#else
 gc_malloc(size_t size, bool clear, struct gc_arena *a)
-#endif
 {
     void *ret;
     if (a)
     {
         struct gc_entry *e;
-#ifdef DMALLOC
-        e = (struct gc_entry *)openvpn_dmalloc(file, line, size + sizeof(struct gc_entry));
-#else
         e = (struct gc_entry *)malloc(size + sizeof(struct gc_entry));
-#endif
         check_malloc_return(e);
         ret = (char *)e + sizeof(struct gc_entry);
         e->next = a->list;
@@ -352,11 +329,7 @@ gc_malloc(size_t size, bool clear, struct gc_arena *a)
     }
     else
     {
-#ifdef DMALLOC
-        ret = openvpn_dmalloc(file, line, size);
-#else
         ret = malloc(size);
-#endif
         check_malloc_return(ret);
     }
 #ifndef ZERO_BUFFER_ON_ALLOC
@@ -439,11 +412,7 @@ gc_addspecial(void *addr, void (*free_function)(void *), struct gc_arena *a)
 {
     ASSERT(a);
     struct gc_entry_special *e;
-#ifdef DMALLOC
-    e = (struct gc_entry_special *)openvpn_dmalloc(file, line, sizeof(struct gc_entry_special));
-#else
     e = (struct gc_entry_special *)malloc(sizeof(struct gc_entry_special));
-#endif
     check_malloc_return(e);
     e->free_fnc = free_function;
     e->addr = addr;
@@ -589,6 +558,7 @@ skip_leading_whitespace(const char *str)
     return str;
 }
 
+#ifdef _WIN32
 /*
  * like buf_null_terminate, but operate on strings
  */
@@ -605,6 +575,7 @@ string_null_terminate(char *str, int len, int capacity)
         *(str + len - 1) = '\0';
     }
 }
+#endif
 
 /*
  * Remove trailing \r and \n chars.
@@ -642,11 +613,7 @@ rm_trailing_chars(char *str, const char *what_to_delete)
  * Allocate a string
  */
 char *
-#ifdef DMALLOC
-string_alloc_debug(const char *str, struct gc_arena *gc, const char *file, int line)
-#else
 string_alloc(const char *str, struct gc_arena *gc)
-#endif
 {
     if (str)
     {
@@ -655,11 +622,7 @@ string_alloc(const char *str, struct gc_arena *gc)
 
         if (gc)
         {
-#ifdef DMALLOC
-            ret = (char *)gc_malloc_debug(n, false, gc, file, line);
-#else
             ret = (char *)gc_malloc(n, false, gc);
-#endif
         }
         else
         {
@@ -667,11 +630,7 @@ string_alloc(const char *str, struct gc_arena *gc)
              * that the caller cleans up afterwards.  This is coherent with the
              * earlier behaviour when gc_malloc() would be called with gc == NULL
              */
-#ifdef DMALLOC
-            ret = openvpn_dmalloc(file, line, n);
-#else
             ret = calloc(1, n);
-#endif
             check_malloc_return(ret);
         }
         memcpy(ret, str, n);
@@ -745,21 +704,13 @@ print_argv(const char **p, struct gc_arena *gc, const unsigned int flags)
  * Allocate a string inside a buffer
  */
 struct buffer
-#ifdef DMALLOC
-string_alloc_buf_debug(const char *str, struct gc_arena *gc, const char *file, int line)
-#else
 string_alloc_buf(const char *str, struct gc_arena *gc)
-#endif
 {
     struct buffer buf;
 
     ASSERT(str);
 
-#ifdef DMALLOC
-    buf_set_read(&buf, (uint8_t *)string_alloc_debug(str, gc, file, line), strlen(str) + 1);
-#else
     buf_set_read(&buf, (uint8_t *)string_alloc(str, gc), strlen(str) + 1);
-#endif
 
     if (buf.len > 0) /* Don't count trailing '\0' as part of length */
     {
@@ -1152,7 +1103,7 @@ valign4(const struct buffer *buf, const char *file, const int line)
     if (buf && buf->len)
     {
         msglvl_t msglevel = D_ALIGN_DEBUG;
-        const unsigned int u = (unsigned int)BPTR(buf);
+        const uintptr_t u = (uintptr_t)BPTR(buf);
 
         if (u & (PAYLOAD_ALIGN - 1))
         {

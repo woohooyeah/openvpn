@@ -100,37 +100,19 @@ tls_free_lib(void)
 }
 
 void
-tls_ctx_server_new(struct tls_root_ctx *ctx)
+tls_ctx_new(struct tls_root_ctx *ctx)
 {
     ASSERT(NULL != ctx);
 
-    ctx->ctx = SSL_CTX_new_ex(tls_libctx, NULL, SSLv23_server_method());
+    ctx->ctx = SSL_CTX_new_ex(tls_libctx, NULL, TLS_method());
 
     if (ctx->ctx == NULL)
     {
-        crypto_msg(M_FATAL, "SSL_CTX_new SSLv23_server_method");
+        crypto_msg(M_FATAL, "SSL_CTX_new TLS_method");
     }
     if (ERR_peek_error() != 0)
     {
-        crypto_msg(M_WARN, "Warning: TLS server context initialisation "
-                           "has warnings.");
-    }
-}
-
-void
-tls_ctx_client_new(struct tls_root_ctx *ctx)
-{
-    ASSERT(NULL != ctx);
-
-    ctx->ctx = SSL_CTX_new_ex(tls_libctx, NULL, SSLv23_client_method());
-
-    if (ctx->ctx == NULL)
-    {
-        crypto_msg(M_FATAL, "SSL_CTX_new SSLv23_client_method");
-    }
-    if (ERR_peek_error() != 0)
-    {
-        crypto_msg(M_WARN, "Warning: TLS client context initialisation "
+        crypto_msg(M_WARN, "Warning: TLS context initialisation "
                            "has warnings.");
     }
 }
@@ -200,42 +182,12 @@ info_callback(INFO_CALLBACK_SSL_CONST SSL *s, int where, int ret)
 
 /*
  * Return maximum TLS version supported by local OpenSSL library.
- * Assume that presence of SSL_OP_NO_TLSvX macro indicates that
- * TLSvX is supported.
+ * We only support OpenSSL versions that support TLS 1.3.
  */
 int
 tls_version_max(void)
 {
-#if defined(TLS1_3_VERSION)
-    /* If this is defined we can safely assume TLS 1.3 support */
     return TLS_VER_1_3;
-#elif OPENSSL_VERSION_NUMBER >= 0x10100000L
-    /*
-     * If TLS_VER_1_3 is not defined, we were compiled against a version that
-     * did not support TLS 1.3.
-     *
-     * However, the library we are *linked* against might be OpenSSL 1.1.1
-     * and therefore supports TLS 1.3. This needs to be checked at runtime
-     * since we can be compiled against 1.1.0 and then the library can be
-     * upgraded to 1.1.1.
-     * We only need to check this for OpenSSL versions that can be
-     * upgraded to 1.1.1 without recompile (>= 1.1.0)
-     */
-    if (OpenSSL_version_num() >= 0x1010100fL)
-    {
-        return TLS_VER_1_3;
-    }
-    else
-    {
-        return TLS_VER_1_2;
-    }
-#elif defined(TLS1_2_VERSION) || defined(SSL_OP_NO_TLSv1_2)
-    return TLS_VER_1_2;
-#elif defined(TLS1_1_VERSION) || defined(SSL_OP_NO_TLSv1_1)
-    return TLS_VER_1_1;
-#else /* if defined(TLS1_3_VERSION) */
-    return TLS_VER_1_0;
-#endif
 }
 
 /** Convert internal version number to openssl version number */
@@ -256,22 +208,7 @@ openssl_tls_version(unsigned int ver)
     }
     else if (ver == TLS_VER_1_3)
     {
-        /*
-         * Supporting the library upgraded to TLS1.3 without recompile
-         * is enough to support here with a simple constant that the same
-         * as in the TLS 1.3, so spec it is very unlikely that OpenSSL
-         * will change this constant
-         */
-#ifndef TLS1_3_VERSION
-        /*
-         * We do not want to define TLS_VER_1_3 if not defined
-         * since other parts of the code use the existance of this macro
-         * as proxy for TLS 1.3 support
-         */
-        return 0x0304;
-#else
         return TLS1_3_VERSION;
-#endif
     }
     return 0;
 }
@@ -328,7 +265,7 @@ tls_ctx_set_options(struct tls_root_ctx *ctx, unsigned int ssl_flags)
     ASSERT(NULL != ctx);
 
     /* process SSL options */
-    uint64_t sslopt = SSL_OP_SINGLE_DH_USE | SSL_OP_NO_TICKET;
+    openssl_opt_t sslopt = SSL_OP_SINGLE_DH_USE | SSL_OP_NO_TICKET;
 #ifdef SSL_OP_CIPHER_SERVER_PREFERENCE
     sslopt |= SSL_OP_CIPHER_SERVER_PREFERENCE;
 #endif
@@ -481,6 +418,7 @@ tls_ctx_restrict_ciphers(struct tls_root_ctx *ctx, const char *ciphers)
     }
 }
 
+#ifdef TLS1_3_VERSION
 static void
 convert_tls13_list_to_openssl(char *openssl_ciphers, size_t len, const char *ciphers)
 {
@@ -491,8 +429,8 @@ convert_tls13_list_to_openssl(char *openssl_ciphers, size_t len, const char *cip
      */
     if (strlen(ciphers) >= (len - 1))
     {
-        msg(M_FATAL, "Failed to set restricted TLS 1.3 cipher list, too long (>%d).",
-            (int)(len - 1));
+        msg(M_FATAL, "Failed to set restricted TLS 1.3 cipher list, too long (>%zd).",
+            len - 1);
     }
 
     strncpy(openssl_ciphers, ciphers, len);
@@ -505,23 +443,18 @@ convert_tls13_list_to_openssl(char *openssl_ciphers, size_t len, const char *cip
         }
     }
 }
+#endif
 
 void
 tls_ctx_restrict_ciphers_tls13(struct tls_root_ctx *ctx, const char *ciphers)
 {
     if (ciphers == NULL)
     {
-        /* default cipher list of OpenSSL 1.1.1 is sane, do not set own
+        /* default cipher list of OpenSSL is sane, do not set own
          * default as we do with tls-cipher */
         return;
     }
 
-#if !defined(TLS1_3_VERSION)
-    crypto_msg(M_WARN,
-               "Not compiled with OpenSSL 1.1.1 or higher. "
-               "Ignoring TLS 1.3 only tls-ciphersuites '%s' setting.",
-               ciphers);
-#else
     ASSERT(NULL != ctx);
 
     char openssl_ciphers[4096];
@@ -531,14 +464,12 @@ tls_ctx_restrict_ciphers_tls13(struct tls_root_ctx *ctx, const char *ciphers)
     {
         crypto_msg(M_FATAL, "Failed to set restricted TLS 1.3 cipher list: %s", openssl_ciphers);
     }
-#endif
 }
 
 void
 tls_ctx_set_cert_profile(struct tls_root_ctx *ctx, const char *profile)
 {
-#if OPENSSL_VERSION_NUMBER > 0x10100000L                                            \
-    && (!defined(LIBRESSL_VERSION_NUMBER) || LIBRESSL_VERSION_NUMBER > 0x3060000fL) \
+#if (!defined(LIBRESSL_VERSION_NUMBER) || LIBRESSL_VERSION_NUMBER > 0x3060000fL) \
     && !defined(OPENSSL_IS_AWSLC)
     /* OpenSSL does not have certificate profiles, but a complex set of
      * callbacks that we could try to implement to achieve something similar.
@@ -565,7 +496,7 @@ tls_ctx_set_cert_profile(struct tls_root_ctx *ctx, const char *profile)
     {
         msg(M_FATAL, "ERROR: Invalid cert profile: %s", profile);
     }
-#else  /* if OPENSSL_VERSION_NUMBER > 0x10100000L */
+#else
     if (profile)
     {
         msg(M_WARN,
@@ -573,7 +504,7 @@ tls_ctx_set_cert_profile(struct tls_root_ctx *ctx, const char *profile)
             "support --tls-cert-profile, ignoring user-set profile: '%s'",
             profile);
     }
-#endif /* if OPENSSL_VERSION_NUMBER > 0x10100000L */
+#endif
 }
 
 void
@@ -981,7 +912,6 @@ tls_ctx_load_pkcs12(struct tls_root_ctx *ctx, const char *pkcs12_file, bool pkcs
     X509 *cert;
     STACK_OF(X509) *ca = NULL;
     PKCS12 *p12;
-    int i;
     char password[256];
 
     ASSERT(NULL != ctx);
@@ -1065,7 +995,7 @@ tls_ctx_load_pkcs12(struct tls_root_ctx *ctx, const char *pkcs12_file, bool pkcs
          */
         if (ca && sk_X509_num(ca))
         {
-            for (i = 0; i < sk_X509_num(ca); i++)
+            for (openssl_stack_size_t i = 0; i < sk_X509_num(ca); i++)
             {
                 X509_STORE *cert_store = SSL_CTX_get_cert_store(ctx->ctx);
                 if (!X509_STORE_add_cert(cert_store, sk_X509_value(ca, i)))
@@ -1090,7 +1020,7 @@ tls_ctx_load_pkcs12(struct tls_root_ctx *ctx, const char *pkcs12_file, bool pkcs
          */
         if (ca && sk_X509_num(ca))
         {
-            for (i = 0; i < sk_X509_num(ca); i++)
+            for (openssl_stack_size_t i = 0; i < sk_X509_num(ca); i++)
             {
                 if (!SSL_CTX_add_extra_chain_cert(ctx->ctx, sk_X509_value(ca, i)))
                 {
@@ -1657,7 +1587,7 @@ static int
 ecdsa_sign(int type, const unsigned char *dgst, int dgstlen, unsigned char *sig,
            unsigned int *siglen, const BIGNUM *kinv, const BIGNUM *r, EC_KEY *ec)
 {
-    int capacity = ECDSA_size(ec);
+    int capacity = (int)ECDSA_size(ec);
     /*
      * ECDSA does not seem to have proper constants for paddings since
      * there are only signatures without padding at the moment, use
@@ -1673,12 +1603,14 @@ ecdsa_sign(int type, const unsigned char *dgst, int dgstlen, unsigned char *sig,
     return 0;
 }
 
+#ifndef OPENSSL_IS_AWSLC
 /* EC_KEY_METHOD callback: sign_setup(). We do no precomputations */
 static int
 ecdsa_sign_setup(EC_KEY *ec, BN_CTX *ctx_in, BIGNUM **kinvp, BIGNUM **rp)
 {
     return 1;
 }
+#endif
 
 /* EC_KEY_METHOD callback: sign_sig().
  * Sign the hash and return the result as a newly allocated ECDS_SIG
@@ -1689,7 +1621,7 @@ ecdsa_sign_sig(const unsigned char *dgst, int dgstlen, const BIGNUM *in_kinv, co
                EC_KEY *ec)
 {
     ECDSA_SIG *ecsig = NULL;
-    unsigned int len = ECDSA_size(ec);
+    unsigned int len = (unsigned int)ECDSA_size(ec);
     struct gc_arena gc = gc_new();
 
     unsigned char *buf = gc_malloc(len, false, &gc);
@@ -1855,7 +1787,7 @@ tls_ctx_load_ca(struct tls_root_ctx *ctx, const char *ca_file, bool ca_file_inli
     X509_LOOKUP *lookup = NULL;
     X509_STORE *store = NULL;
     BIO *in = NULL;
-    int i, added = 0, prev = 0;
+    openssl_stack_size_t added = 0, prev = 0;
 
     ASSERT(NULL != ctx);
 
@@ -1884,7 +1816,7 @@ tls_ctx_load_ca(struct tls_root_ctx *ctx, const char *ca_file, bool ca_file_inli
 
         if (info_stack)
         {
-            for (i = 0; i < sk_X509_INFO_num(info_stack); i++)
+            for (openssl_stack_size_t i = 0; i < sk_X509_INFO_num(info_stack); i++)
             {
                 X509_INFO *info = sk_X509_INFO_value(info_stack, i);
                 if (info->crl)
@@ -1942,11 +1874,11 @@ tls_ctx_load_ca(struct tls_root_ctx *ctx, const char *ca_file, bool ca_file_inli
 
                 if (tls_server)
                 {
-                    int cnum = sk_X509_NAME_num(cert_names);
+                    openssl_stack_size_t cnum = sk_X509_NAME_num(cert_names);
                     if (cnum != (prev + 1))
                     {
                         crypto_msg(M_WARN,
-                                   "Cannot load CA certificate file %s (entry %d did not validate)",
+                                   "Cannot load CA certificate file %s (entry %" PRI_OPENSSL_STACK " did not validate)",
                                    print_key_filename(ca_file, ca_file_inline), added);
                     }
                     prev = cnum;
@@ -1954,7 +1886,7 @@ tls_ctx_load_ca(struct tls_root_ctx *ctx, const char *ca_file, bool ca_file_inli
             }
             sk_X509_INFO_pop_free(info_stack, X509_INFO_free);
         }
-        int cnum;
+        openssl_stack_size_t cnum;
         if (tls_server)
         {
             cnum = sk_X509_NAME_num(cert_names);
@@ -1972,8 +1904,8 @@ tls_ctx_load_ca(struct tls_root_ctx *ctx, const char *ca_file, bool ca_file_inli
             if (cnum != added)
             {
                 crypto_msg(M_FATAL,
-                           "Cannot load CA certificate file %s (only %d "
-                           "of %d entries were valid X509 names)",
+                           "Cannot load CA certificate file %s (only %" PRI_OPENSSL_STACK
+                           "of %" PRI_OPENSSL_STACK "entries were valid X509 names)",
                            print_key_filename(ca_file, ca_file_inline), cnum, added);
             }
         }
@@ -2596,14 +2528,12 @@ show_available_tls_ciphers_list(const char *cipher_list, const char *tls_cert_pr
         crypto_msg(M_FATAL, "Cannot create SSL_CTX object");
     }
 
-#if defined(TLS1_3_VERSION)
     if (tls13)
     {
         SSL_CTX_set_min_proto_version(tls_ctx.ctx, TLS1_3_VERSION);
         tls_ctx_restrict_ciphers_tls13(&tls_ctx, cipher_list);
     }
     else
-#endif
     {
         SSL_CTX_set_max_proto_version(tls_ctx.ctx, TLS1_2_VERSION);
         tls_ctx_restrict_ciphers(&tls_ctx, cipher_list);
@@ -2617,12 +2547,12 @@ show_available_tls_ciphers_list(const char *cipher_list, const char *tls_cert_pr
         crypto_msg(M_FATAL, "Cannot create SSL object");
     }
 
-#if OPENSSL_VERSION_NUMBER < 0x1010000fL || defined(OPENSSL_IS_AWSLC) || defined(ENABLE_CRYPTO_WOLFSSL)
+#if defined(OPENSSL_IS_AWSLC) || defined(ENABLE_CRYPTO_WOLFSSL)
     STACK_OF(SSL_CIPHER) *sk = SSL_get_ciphers(ssl);
 #else
     STACK_OF(SSL_CIPHER) *sk = SSL_get1_supported_ciphers(ssl);
 #endif
-    for (int i = 0; i < sk_SSL_CIPHER_num(sk); i++)
+    for (openssl_stack_size_t i = 0; i < sk_SSL_CIPHER_num(sk); i++)
     {
         const SSL_CIPHER *c = sk_SSL_CIPHER_value(sk, i);
 
@@ -2645,9 +2575,7 @@ show_available_tls_ciphers_list(const char *cipher_list, const char *tls_cert_pr
             printf("%s\n", pair->iana_name);
         }
     }
-#if (OPENSSL_VERSION_NUMBER >= 0x1010000fL)
     sk_SSL_CIPHER_free(sk);
-#endif
     SSL_free(ssl);
     SSL_CTX_free(tls_ctx.ctx);
 }

@@ -56,6 +56,8 @@
 #define OPTION_PARM_SIZE 256
 #define OPTION_LINE_SIZE 256
 
+#define PING_TIMEOUT_MAX 86400 /* one day (in seconds) */
+
 extern const char title_string[];
 
 /* certain options are saved before --pull modifications are applied */
@@ -695,6 +697,9 @@ struct options
     enum tun_driver_type windows_driver;
 #endif
 
+    /** Whether the data channel uses the DATA_V2 header (peer-id).
+     *  Mirror of tls_multi->use_peer_id, needed by the MTU/frame calculation
+     *  which only has access to struct options. */
     bool use_peer_id;
     uint32_t peer_id;
 
@@ -895,8 +900,6 @@ void init_options(struct options *o);
 void uninit_options(struct options *o);
 
 void setenv_settings(struct env_set *es, const struct options *o);
-
-void show_settings(const struct options *o);
 
 bool string_defined_equal(const char *s1, const char *s2);
 

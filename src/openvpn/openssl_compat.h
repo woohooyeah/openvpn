@@ -26,9 +26,9 @@
  * OpenSSL compatibility stub
  *
  * This file provide compatibility stubs for the OpenSSL libraries
- * prior to version 1.1. This version introduces many changes in the
- * library interface, including the fact that various objects and
- * structures are not fully opaque.
+ * prior to the current major version. Newer versions may introduce changes
+ * in the library interface, including replacing functions or enforcing
+ * various objects and structures as fully opaque.
  */
 
 #ifndef OPENSSL_COMPAT_H_
@@ -49,15 +49,18 @@
  * intrusive than casts everywhere */
 #if defined(OPENSSL_IS_AWSLC)
 typedef uint32_t openssl_err_t;
+typedef size_t openssl_stack_size_t;
+#define PRI_OPENSSL_STACK "zu"
+typedef uint32_t openssl_opt_t;
 #else
 typedef unsigned long openssl_err_t;
+typedef int openssl_stack_size_t;
+#define PRI_OPENSSL_STACK "d"
+/* OpenSSL 4.0 actually uses bits in the upper half of the uint64_t (e.g.
+ * SSL_OP_PREFER_NO_DHE_KEX), so we really should use an uint64_t here */
+typedef uint64_t openssl_opt_t;
 #endif
 
-
-/* Functionality missing in 1.1.0 */
-#if OPENSSL_VERSION_NUMBER < 0x10101000L && !defined(ENABLE_CRYPTO_WOLFSSL)
-#define SSL_CTX_set1_groups SSL_CTX_set1_curves
-#endif
 
 /* Functionality missing in LibreSSL before 3.5 */
 #if defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x3050000fL

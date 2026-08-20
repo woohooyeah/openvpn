@@ -1780,7 +1780,7 @@ route_ipv6_clear_host_bits(struct route_ipv6 *r6)
         }
         else
         {
-            r6->network.s6_addr[byte--] &= (0xff << bits_to_clear);
+            r6->network.s6_addr[byte--] &= (uint8_t)(0xff << bits_to_clear);
             bits_to_clear = 0;
         }
     }
@@ -2884,7 +2884,7 @@ do_route_ipv4_service(const bool add, const struct route_ipv4 *r, const struct t
                             .prefix.ipv4.s_addr = htonl(r->network),
                             .gateway.ipv4.s_addr = htonl(r->gateway),
                             .iface = { .index = if_index, .name = "" },
-                            .metric = (r->flags & RT_METRIC_DEFINED ? r->metric : -1) };
+                            .metric = (r->flags & RT_METRIC_DEFINED) ? r->metric : -1 };
 
     netmask_to_netbits(r->network, r->netmask, &msg.prefix_len);
     if (msg.prefix_len == -1)
@@ -2986,7 +2986,7 @@ do_route_ipv6_service(const bool add, const struct route_ipv6 *r, const struct t
                             .prefix_len = r->netbits,
                             .gateway.ipv6 = r->gateway,
                             .iface = { .index = tt->adapter_index, .name = "" },
-                            .metric = ((r->flags & RT_METRIC_DEFINED) ? r->metric : -1) };
+                            .metric = (r->flags & RT_METRIC_DEFINED) ? r->metric : -1 };
 
     if (r->adapter_index) /* vpn server special route */
     {

@@ -151,28 +151,20 @@ enum first_packet_verdict tls_pre_decrypt_lite(const struct tls_auth_standalone 
                                                const struct link_socket_actual *from,
                                                const struct buffer *buf);
 
-/* Creates an SHA256 HMAC context with a random key that is used for the
- * session id.
- *
- * We do not support loading this from a config file since continuing session
- * between restarts of OpenVPN has never been supported and that includes
- * early session setup.
- */
-hmac_ctx_t *session_id_hmac_init(void);
-
 /**
  * Calculates the HMAC based server session id based on a client session id
  * and socket addr.
  *
  * @param client_sid    session id of the client
  * @param from          link_socket from the client
- * @param hmac          the hmac context to use for the calculation
+ * @param key           the siphash key to use for the calculation
  * @param handwindow    the quantisation of the current time
  * @param offset        offset to 'now' to use
  * @return              the expected server session id
  */
 struct session_id calculate_session_id_hmac(struct session_id client_sid,
-                                            const struct openvpn_sockaddr *from, hmac_ctx_t *hmac,
+                                            const struct openvpn_sockaddr *from,
+                                            const uint8_t *key,
                                             int handwindow, int offset);
 
 /**
@@ -185,13 +177,13 @@ struct session_id calculate_session_id_hmac(struct session_id client_sid,
  *
  * @param state         session information
  * @param from          link_socket from the client
- * @param hmac          the hmac context to use for the calculation
+ * @param key           the siphash key to use for the calculation
  * @param handwindow    the quantisation of the current time
  * @param pkt_is_ack    the packet being checked is a P_ACK_V1
  * @return              the expected server session id
  */
 bool check_session_hmac_and_pkt_id(struct tls_pre_decrypt_state *state, const struct openvpn_sockaddr *from,
-                                   hmac_ctx_t *hmac, int handwindow, bool pkt_is_ack);
+                                   uint8_t *key, int handwindow, bool pkt_is_ack);
 
 /*
  * Write a control channel authentication record.
@@ -207,12 +199,10 @@ void write_control_auth(struct tls_session *session, struct key_state *ks, struc
  * @param ctx               control channel security context
  * @param from              incoming link socket address
  * @param opt               tls options struct for the session
- * @param initial_packet    whether this is the initial packet for the connection
  * @return                  if the packet was successfully processed
  */
 bool read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
-                       const struct link_socket_actual *from, const struct tls_options *opt,
-                       bool initial_packet);
+                       const struct link_socket_actual *from, const struct tls_options *opt);
 
 
 /**

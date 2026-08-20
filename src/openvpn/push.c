@@ -429,11 +429,6 @@ send_auth_failed(struct context *c, const char *client_reason)
     gc_free(&gc);
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#endif
-
 bool
 send_auth_pending_messages(struct tls_multi *tls_multi, struct tls_session *session,
                            const char *extra, unsigned int timeout)
@@ -449,7 +444,12 @@ send_auth_pending_messages(struct tls_multi *tls_multi, struct tls_session *sess
     /* Calculate the maximum timeout and subtract the time we already waited */
     unsigned int max_timeout =
         max_uint(tls_multi->opt.renegotiate_seconds / 2, tls_multi->opt.handshake_window);
-    max_timeout = max_timeout - (now - ks->initial);
+    time_t time_elapsed = now - ks->initial;
+    if (time_elapsed < 0 || time_elapsed >= (time_t)max_timeout)
+    {
+        return false;
+    }
+    max_timeout -= (unsigned int)time_elapsed;
     timeout = min_uint(max_timeout, timeout);
 
     struct gc_arena gc = gc_new();
@@ -661,9 +661,9 @@ prepare_push_reply(struct context *c, struct gc_arena *gc, struct push_list *pus
                         print_in_addr_t(c->c2.push_ifconfig_remote_netmask, 0, gc));
     }
 
-    if (tls_multi->use_peer_id)
+    if (tls_multi->use_peer_id && !tls_multi->use_asymmetric_peer_id)
     {
-        push_option_fmt(gc, push_list, M_USAGE, "peer-id %d", tls_multi->peer_id);
+        push_option_fmt(gc, push_list, M_USAGE, "peer-id %d", tls_multi->rx_peer_id);
     }
     /*
      * If server uses --auth-gen-token and we have an auth token
@@ -717,10 +717,9 @@ prepare_push_reply(struct context *c, struct gc_arena *gc, struct push_list *pus
     }
 
     /* Push our mtu to the peer if it supports pushable MTUs */
-    int client_max_mtu = 0;
-    const char *iv_mtu = extract_var_peer_info(tls_multi->peer_info, "IV_MTU=", gc);
+    int client_max_mtu = peer_info_extract_uint(tls_multi->peer_info, "IV_MTU=");
 
-    if (iv_mtu && sscanf(iv_mtu, "%d", &client_max_mtu) == 1)
+    if (client_max_mtu != 0)
     {
         push_option_fmt(gc, push_list, M_USAGE, "tun-mtu %d", o->ce.tun_mtu);
         if (client_max_mtu < o->ce.tun_mtu)
@@ -733,6 +732,11 @@ prepare_push_reply(struct context *c, struct gc_arena *gc, struct push_list *pus
         }
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#endif
 
 static bool
 send_push_options(struct context *c, struct buffer *buf, struct push_list *push_list, int safe_cap,
@@ -994,9 +998,7 @@ process_incoming_push_request(struct context *c)
     else if (tls_authentication_status(c->c2.tls_multi) == TLS_AUTHENTICATION_SUCCEEDED
              && c->c2.tls_multi->multi_state >= CAS_CONNECT_DONE)
     {
-        time_t now;
-
-        openvpn_time(&now);
+        update_time();
         if (c->c2.sent_push_reply_expiry > now)
         {
             ret = PUSH_MSG_ALREADY_REPLIED;

@@ -39,6 +39,7 @@
 #include "integer.h"
 #include "crypto.h"
 #include "crypto_backend.h"
+#include "memdbg.h"
 #include "openssl_compat.h"
 
 #include <openssl/conf.h>
@@ -273,40 +274,6 @@ crypto_print_openssl_errors(const unsigned int flags)
 }
 
 
-/*
- *
- * OpenSSL memory debugging.  If dmalloc debugging is enabled, tell
- * OpenSSL to use our private malloc/realloc/free functions so that
- * we can dispatch them to dmalloc.
- *
- */
-
-#ifdef DMALLOC
-static void *
-crypto_malloc(size_t size, const char *file, int line)
-{
-    return dmalloc_malloc(file, line, size, DMALLOC_FUNC_MALLOC, 0, 0);
-}
-
-static void *
-crypto_realloc(void *ptr, size_t size, const char *file, int line)
-{
-    return dmalloc_realloc(file, line, ptr, size, DMALLOC_FUNC_REALLOC, 0);
-}
-
-static void
-crypto_free(void *ptr)
-{
-    dmalloc_free(__FILE__, __LINE__, ptr, DMALLOC_FUNC_FREE);
-}
-
-void
-crypto_init_dmalloc(void)
-{
-    CRYPTO_set_mem_ex_functions(crypto_malloc, crypto_realloc, crypto_free);
-}
-#endif /* DMALLOC */
-
 const cipher_name_pair cipher_name_translation_table[] = {
     { "AES-128-GCM", "id-aes128-GCM" },
     { "AES-192-GCM", "id-aes192-GCM" },
@@ -425,7 +392,7 @@ void
 print_digest(EVP_MD *digest, void *unused)
 {
     printf("%s %d bit digest size\n", md_kt_name(EVP_MD_get0_name(digest)),
-           EVP_MD_size(digest) * 8);
+           (int)EVP_MD_size(digest) * 8);
 }
 
 void
@@ -1025,7 +992,7 @@ md_get(const char *digest)
                    "Message hash algorithm '%s' uses a default hash "
                    "size (%d bytes) which is larger than " PACKAGE_NAME "'s current "
                    "maximum hash size (%d bytes)",
-                   digest, EVP_MD_size(md), MAX_HMAC_KEY_LENGTH);
+                   digest, (int)EVP_MD_size(md), MAX_HMAC_KEY_LENGTH);
     }
     return md;
 }
@@ -1144,7 +1111,7 @@ md_ctx_cleanup(EVP_MD_CTX *ctx)
 int
 md_ctx_size(const EVP_MD_CTX *ctx)
 {
-    return EVP_MD_CTX_size(ctx);
+    return (int)EVP_MD_CTX_size(ctx);
 }
 
 void
@@ -1188,7 +1155,7 @@ hmac_ctx_init(HMAC_CTX *ctx, const uint8_t *key, const char *mdname)
     evp_md_type *kt = md_get(mdname);
     ASSERT(NULL != kt && NULL != ctx);
 
-    int key_len = EVP_MD_size(kt);
+    int key_len = (int)EVP_MD_size(kt);
     HMAC_CTX_reset(ctx);
     if (!HMAC_Init_ex(ctx, key, key_len, kt, NULL))
     {
@@ -1242,7 +1209,7 @@ hmac_ctx_final(HMAC_CTX *ctx, uint8_t *dst)
 
     HMAC_Final(ctx, dst, &in_hmac_len);
 }
-#else  /* if OPENSSL_VERSION_NUMBER < 0x30000000L */
+#else /* if OPENSSL_VERSION_NUMBER < 0x30000000L */
 hmac_ctx_t *
 hmac_ctx_new(void)
 {
@@ -1308,10 +1275,14 @@ hmac_ctx_size(hmac_ctx_t *ctx)
 void
 hmac_ctx_reset(hmac_ctx_t *ctx)
 {
-    /* The OpenSSL MAC API lacks a reset method and passing NULL as params
-     * does not reset it either, so use the params array to reinitialise it the
-     * same way as before */
-    if (!EVP_MAC_init(ctx->ctx, NULL, 0, ctx->params))
+    /* OpenSSL 3.0.3 fixed EVP_MAC reinitialization with an existing key.
+     * Older versions need the parameters, including the key, to reset. */
+#if OPENSSL_VERSION_NUMBER >= 0x30000030L
+    const OSSL_PARAM *params = NULL;
+#else
+    const OSSL_PARAM *params = ctx->params;
+#endif
+    if (!EVP_MAC_init(ctx->ctx, NULL, 0, params))
     {
         crypto_msg(M_FATAL, "EVP_MAC_init failed");
     }

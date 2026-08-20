@@ -929,14 +929,12 @@ read_incoming_link(struct context *c, struct link_socket *sock)
      * Set up for recvfrom call to read datagram
      * sent to our TCP/UDP port.
      */
-    int status;
-
     /*ASSERT (!c->c2.to_tun.len);*/
 
     c->c2.buf = c->c2.buffers->read_link_buf;
     ASSERT(buf_init(&c->c2.buf, c->c2.frame.buf.headroom));
 
-    status = link_socket_read(sock, &c->c2.buf, &c->c2.from);
+    ssize_t status = link_socket_read(sock, &c->c2.buf, &c->c2.from);
 
     if (socket_connection_reset(sock, status))
     {
@@ -955,14 +953,14 @@ read_incoming_link(struct context *c, struct link_socket *sock)
             if (event_timeout_defined(&c->c2.explicit_exit_notification_interval))
             {
                 msg(D_STREAM_ERRORS,
-                    "Connection reset during exit notification period, ignoring [%d]", status);
+                    "Connection reset during exit notification period, ignoring [%zd]", status);
                 management_sleep(1);
             }
             else
             {
                 register_signal(c->sig, SIGUSR1,
                                 "connection-reset"); /* SOFT-SIGUSR1 -- TCP connection reset */
-                msg(D_STREAM_ERRORS, "Connection reset, restarting [%d]", status);
+                msg(D_STREAM_ERRORS, "Connection reset, restarting [%zd]", status);
             }
         }
         return;
@@ -1026,7 +1024,7 @@ process_incoming_link_part1(struct context *c, struct link_socket_info *lsi, boo
      * Good, non-zero length packet received.
      * Commence multi-stage processing of packet,
      * such as authenticate, decrypt, decompress.
-     * If any stage fails, it sets buf.len to 0 or -1,
+     * If any stage fails, it sets buf.len to 0,
      * telling downstream stages to ignore the packet.
      */
     if (c->c2.buf.len > 0)
@@ -1598,7 +1596,9 @@ ipv6_send_icmp_unreachable(struct context *c, struct buffer *buf, bool client)
      * frame should be <= 1280 and have as much as possible of the original
      * packet
      */
-    const int max_payload_size = min_int(MAX_ICMPV6LEN, c->c2.frame.tun_mtu - icmpheader_len);
+    int max_payload_size = min_int(MAX_ICMPV6LEN, c->c2.frame.tun_mtu - icmpheader_len);
+    /* Ensure that minimum payload size is at least 64 bytes as extra safety layer */
+    max_payload_size = max_int(max_payload_size, 64);
     const int payload_len = min_int(max_payload_size, BLEN(&inputipbuf));
     const uint16_t icmp_len = (uint16_t)(sizeof(struct openvpn_icmp6hdr) + payload_len);
 
@@ -2028,9 +2028,8 @@ pre_select(struct context *c)
     check_timeout_random_component(c);
 }
 
-static void
-multi_io_process_flags(struct context *c, struct event_set *es, const unsigned int flags,
-                       unsigned int *out_socket, unsigned int *out_tuntap)
+void
+multi_io_process_flags(struct context *c, struct event_set *es, struct link_socket *sock, const unsigned int flags)
 {
     unsigned int socket = 0;
     unsigned int tuntap = 0;
@@ -2121,50 +2120,19 @@ multi_io_process_flags(struct context *c, struct event_set *es, const unsigned i
      * (for TCP server sockets this happens in
      *  socket_set_listen_persistent()).
      */
-    for (int i = 0; i < c->c1.link_sockets_num; i++)
-    {
-        if ((c->options.mode != MODE_SERVER) || (proto_is_dgram(c->c2.link_sockets[i]->info.proto)))
-        {
-            socket_set(c->c2.link_sockets[i], es, socket, &c->c2.link_sockets[i]->ev_arg, NULL);
-        }
-    }
-
+    socket_set(sock, es, socket, &sock->ev_arg, NULL);
     tun_set(c->c1.tuntap, es, tuntap, (void *)tun_shift, NULL);
-
-    if (out_socket)
-    {
-        *out_socket = socket;
-    }
-
-    if (out_tuntap)
-    {
-        *out_tuntap = tuntap;
-    }
 }
 
 /*
- * Wait for I/O events.  Used for UDP sockets in
- * point-to-multipoint mode.
- */
-
-void
-get_io_flags_udp(struct context *c, struct multi_io *multi_io, const unsigned int flags)
-{
-    unsigned int out_socket;
-
-    multi_io_process_flags(c, multi_io->es, flags, &out_socket, NULL);
-    multi_io->udp_flags = (out_socket << SOCKET_SHIFT);
-}
-
-/*
- * This is the core I/O wait function, used for all I/O waits except
- * for the top-level server sockets.
+ * This is the core I/O wait function, used for all I/O waits.
+ *
+ * Invoked by P2P instances in tunnel_point_to_point() or by P2MP
+ * instances within the per-client context in multi_io.c.
  */
 void
 io_wait(struct context *c, const unsigned int flags)
 {
-    unsigned int out_socket;
-    unsigned int out_tuntap;
     struct event_set_return esr[4];
 
     /* These shifts all depend on EVENT_READ and EVENT_WRITE */
@@ -2183,7 +2151,7 @@ io_wait(struct context *c, const unsigned int flags)
      */
     event_reset(c->c2.event_set);
 
-    multi_io_process_flags(c, c->c2.event_set, flags, &out_socket, &out_tuntap);
+    multi_io_process_flags(c, c->c2.event_set, c->c2.link_sockets[0], flags);
 
 #if defined(TARGET_LINUX) || defined(TARGET_FREEBSD)
     if (c->c1.tuntap)
