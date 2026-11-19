@@ -15,7 +15,7 @@
 
 #ifdef TARGET_LINUX
 static int
-set_lladdr_linux(openvpn_net_ctx_t *ctx, const char *ifname, const char *lladdr)
+set_lladdr_linux(const openvpn_net_ctx_t *ctx, const char *ifname, const char *lladdr)
 {
     uint8_t addr[OPENVPN_ETH_ALEN];
 
@@ -24,7 +24,7 @@ set_lladdr_linux(openvpn_net_ctx_t *ctx, const char *ifname, const char *lladdr)
 }
 #else /* TARGET_LINUX */
 
-#if defined(TARGET_OPENBSD) || defined(TARGET_FREEBSD) || defined(TARGET_DARWIN)
+#if defined(TARGET_OPENBSD) || defined(TARGET_FREEBSD) || defined(TARGET_DARWIN) || defined(TARGET_DRAGONFLY)
 #define IFCONFIG_LLADDR_FMT "%s %s lladdr %s"
 #elif defined(TARGET_NETBSD)
 #define IFCONFIG_LLADDR_FMT "%s %s link %s active"
@@ -36,7 +36,7 @@ set_lladdr_ifconfig(const char *ifname, const char *lladdr, const struct env_set
     struct argv argv = argv_new();
     argv_printf(&argv, IFCONFIG_LLADDR_FMT, IFCONFIG_PATH, ifname, lladdr);
     argv_msg(M_INFO, &argv);
-    int r = openvpn_execve_check(&argv, es, M_WARN, "ERROR: Unable to set link layer address.");
+    int r = openvpn_execve_check(&argv, es, 0, "ERROR: Unable to set link layer address.");
     argv_free(&argv);
     return r;
 #else
@@ -48,7 +48,7 @@ set_lladdr_ifconfig(const char *ifname, const char *lladdr, const struct env_set
 #endif /* TARGET_LINUX */
 
 int
-set_lladdr(openvpn_net_ctx_t *ctx, const char *ifname, const char *lladdr, const struct env_set *es)
+set_lladdr(const openvpn_net_ctx_t *ctx, const char *ifname, const char *lladdr, const struct env_set *es)
 {
     if (!ifname || !lladdr)
     {

@@ -52,9 +52,11 @@
 #include "pkcs11.h"
 #include "route.h"
 #include "tls_crypt.h"
+#include "control_msg.h"
 
 #include "crypto_epoch.h"
 #include "ssl.h"
+#include "acc.h"
 #include "ssl_verify.h"
 #include "ssl_backend.h"
 #include "ssl_ncp.h"
@@ -151,6 +153,11 @@ tls_get_limit_aead(const char *ciphername, uint64_t override)
     return limit;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 void
 tls_init_control_channel_frame_parameters(struct frame *frame, int tls_mtu)
 {
@@ -234,6 +241,10 @@ calc_control_channel_frame_overhead(const struct tls_session *session)
 
     return overhead;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 void
 init_ssl_lib(void)
@@ -671,11 +682,6 @@ init_ssl(const struct options *options, bool in_chroot)
         tls_ctx_load_ecdh_params(new_ctx, options->ecdh_curve);
     }
 
-#ifdef ENABLE_CRYPTO_MBEDTLS
-    /* Personalise the random by mixing in the certificate */
-    tls_ctx_personalise_random(new_ctx);
-#endif
-
     tls_clear_error();
     return new_ctx;
 
@@ -801,6 +807,11 @@ is_hard_reset_method2(int op)
     return false;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /** @addtogroup control_processor
  *  @{ */
 
@@ -878,8 +889,6 @@ key_state_init(struct tls_session *session, struct key_state *ks)
     packet_id_init(&ks->crypto_options.packet_id, session->opt->replay_window,
                    session->opt->replay_time, "SSL", ks->key_id);
 
-    ks->crypto_options.pid_persist = NULL;
-
 #ifdef ENABLE_MANAGEMENT
     ks->mda_key_id = session->opt->mda_context->mda_key_id_counter++;
 #endif
@@ -934,6 +943,10 @@ key_state_free(struct key_state *ks, bool clear, struct buffer *to_link)
 
     free(ks->rec_ack);
     free(ks->lru_acks);
+    if (ks->key_src)
+    {
+        secure_memzero(ks->key_src, sizeof(*ks->key_src));
+    }
     free(ks->key_src);
 
     packet_id_free(&ks->crypto_options.packet_id);
@@ -1037,9 +1050,6 @@ tls_session_init(struct tls_multi *multi, struct tls_session *session)
         session->tls_wrap.opt.packet_id.send.id = EARLY_NEG_START;
     }
 
-    /* load most recent packet-id to replay protect on --tls-auth */
-    packet_id_persist_load_obj(session->tls_wrap.opt.pid_persist, &session->tls_wrap.opt.packet_id);
-
     key_state_init(session, &session->key[KS_PRIMARY]);
 
     dmsg(D_TLS_DEBUG, "TLS: tls_session_init: new session object, sid=%s",
@@ -1047,6 +1057,10 @@ tls_session_init(struct tls_multi *multi, struct tls_session *session)
 
     gc_free(&gc);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /**
  * Clean up a \c tls_session structure.
@@ -1279,6 +1293,7 @@ tls_multi_free(struct tls_multi *multi, bool clear)
     free(multi->locked_cn);
     free(multi->locked_username);
     free(multi->locked_original_username);
+    free(multi->acc_negotiated_protocols);
 
     cert_hash_free(multi->locked_cert_hash_set);
 
@@ -1328,6 +1343,11 @@ key_source2_print(const struct key_source2 *k)
     key_source_print(&k->client, "Client");
     key_source_print(&k->server, "Server");
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 static bool
 openvpn_PRF(const uint8_t *secret, size_t secret_len, const char *label, const uint8_t *client_seed,
@@ -1503,6 +1523,7 @@ static bool
 generate_key_expansion_openvpn_prf(const struct tls_session *session, struct key2 *key2)
 {
     uint8_t master[48] = { 0 };
+    bool ret = false;
 
     const struct key_state *ks = &session->key[KS_PRIMARY];
     const struct key_source2 *key_src = ks->key_src;
@@ -1521,7 +1542,7 @@ generate_key_expansion_openvpn_prf(const struct tls_session *session, struct key
                      sizeof(key_src->client.random1), key_src->server.random1,
                      sizeof(key_src->server.random1), NULL, NULL, master, sizeof(master)))
     {
-        return false;
+        goto exit;
     }
 
     /* compute key expansion */
@@ -1530,13 +1551,15 @@ generate_key_expansion_openvpn_prf(const struct tls_session *session, struct key
                      key_src->server.random2, sizeof(key_src->server.random2), client_sid,
                      server_sid, (uint8_t *)key2->keys, sizeof(key2->keys)))
     {
-        return false;
+        goto exit;
     }
-    secure_memzero(&master, sizeof(master));
 
     key2->n = 2;
+    ret = true;
 
-    return true;
+exit:
+    secure_memzero(&master, sizeof(master));
+    return ret;
 }
 
 /*
@@ -1583,15 +1606,7 @@ generate_key_expansion(struct tls_multi *multi, struct key_state *ks, struct tls
     key2_print(&key2, &session->opt->key_type, "Master Encrypt", "Master Decrypt");
 
     /* check for weak keys */
-    for (int i = 0; i < 2; ++i)
-    {
-        if (!check_key(&key2.keys[i], &session->opt->key_type))
-        {
-            msg(D_TLS_ERRORS, "TLS Error: Bad dynamic key generated");
-            goto exit;
-        }
-    }
-
+    check_key2(&key2);
     ret = init_key_contexts(ks, multi, &session->opt->key_type, server, &key2,
                             session->opt->dco_enabled);
 
@@ -1652,7 +1667,7 @@ tls_session_update_crypto_params_do_work(struct tls_multi *multi, struct tls_ses
         return true;
     }
 
-    init_key_type(&session->opt->key_type, options->ciphername, options->authname, true, true);
+    init_key_type(&session->opt->key_type, options->ciphername, options->authname, true);
 
     bool packet_id_long_form = cipher_kt_mode_ofb_cfb(session->opt->key_type.cipher);
     session->opt->crypto_flags &= ~(CO_PACKET_ID_LONG_FORM);
@@ -2098,6 +2113,11 @@ push_peer_info(struct buffer *buf, const struct tls_multi *multi, struct tls_ses
 #endif
         }
 
+        if (session->opt->acc_protocols)
+        {
+            buf_printf(&out, "IV_ACC=%d,A:6,%s\n", ACC_MAX_MSG_LEN, session->opt->acc_protocols);
+        }
+
         if (session->opt->push_peer_info_detail > 1)
         {
             struct env_set *es = session->opt->es;
@@ -2398,6 +2418,8 @@ key_method_2_read(struct buffer *buf, struct tls_multi *multi, struct tls_sessio
         multi->remote_ciphername = string_alloc("none", NULL);
     }
 
+    determine_common_acc_protocols(multi, session);
+
     if (username_len < 0 || password_len < 0)
     {
         msg(D_TLS_ERRORS, "TLS Error: Username (%d) or password (%d) too long", abs(username_len),
@@ -2641,26 +2663,21 @@ parse_early_negotiation_tlvs(struct buffer *buf, const struct tls_session *sessi
 {
     while (buf->len > 0)
     {
-        if (buf_len(buf) < 4)
-        {
-            goto error;
-        }
-        /* read type */
-        int type = buf_read_u16(buf);
-        int len = buf_read_u16(buf);
-        if (type < 0 || len < 0 || buf_len(buf) < len)
+        struct ctrl_msg_tlv_header hdr;
+        struct buffer value;
+        if (!ctrl_msg_tlv_next(buf, &hdr, &value))
         {
             goto error;
         }
 
-        switch (type)
+        switch (hdr.type)
         {
             case TLV_TYPE_EARLY_NEG_FLAGS:
-                if (len != sizeof(uint16_t))
+                if (BLEN(&value) != sizeof(uint16_t))
                 {
                     goto error;
                 }
-                int flags = buf_read_u16(buf);
+                int flags = buf_read_u16(&value);
 
                 if (flags & EARLY_NEG_FLAG_RESEND_WKC)
                 {
@@ -2679,8 +2696,8 @@ parse_early_negotiation_tlvs(struct buffer *buf, const struct tls_session *sessi
                 break;
 
             default:
-                /* Skip types we do not parse */
-                buf_advance(buf, len);
+                /* Skip types we do not parse, marked optional or not */
+                break;
         }
     }
     reliable_mark_deleted(ks->rec_reliable, buf);
@@ -3727,6 +3744,116 @@ done:
     *opt = NULL;
 }
 
+/**
+ * Does a very coarse check on the received opcode. It only checks if the
+ * opcode is an allowed op code for the peer to send at all, not if this
+ * opcode is valid for the current state.
+ */
+static bool
+tls_pre_decrypt_verify_opcode(int op, bool server, const struct link_socket_actual *from)
+{
+    if (op < P_FIRST_OPCODE || op > P_LAST_OPCODE)
+    {
+        if (op == P_CONTROL_HARD_RESET_CLIENT_V1 || op == P_CONTROL_HARD_RESET_SERVER_V1)
+        {
+            msg(D_TLS_ERRORS, "Peer tried unsupported key-method 1");
+        }
+        struct gc_arena gc = gc_new();
+        msg(D_TLS_ERRORS, "TLS Error: unknown opcode received from %s op=%d",
+            print_link_socket_actual(from, &gc), op);
+        gc_free(&gc);
+        return false;
+    }
+
+    /* hard reset ? */
+    if (is_hard_reset_method2(op))
+    {
+        /* verify client -> server or server -> client connection */
+        if (((op == P_CONTROL_HARD_RESET_CLIENT_V2 || op == P_CONTROL_HARD_RESET_CLIENT_V3)
+             && !server)
+            || ((op == P_CONTROL_HARD_RESET_SERVER_V2) && server))
+        {
+            struct gc_arena gc = gc_new();
+            msg(D_TLS_ERRORS,
+                "TLS Error: client->client or server->server connection attempted from %s",
+                print_link_socket_actual(from, &gc));
+            gc_free(&gc);
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Read the session form the packet buffer buf and puts it into the
+ * parameter sid.
+ *
+ * @return true if the extraction was successful, false otherwise
+ */
+static bool
+tls_pre_decrypt_extract_session_id(const struct link_socket_actual *from,
+                                   struct buffer buf, struct session_id *sid)
+{
+    /* skip op code */
+    buf_advance(&buf, 1);
+    if (!session_id_read(sid, &buf) || !session_id_defined(sid))
+    {
+        struct gc_arena gc = gc_new();
+        msg(D_TLS_ERRORS, "TLS Error: session-id not found in packet from %s",
+            print_link_socket_actual(from, &gc));
+        gc_free(&gc);
+        return false;
+    }
+    return true;
+}
+
+/**
+ *  Find session matching the session id in sid in multi.session array
+ *
+ * @return index of session in multi.session array, TM_SIZE if not found
+ *         and -1 on error
+ */
+static int
+tls_pre_decrypt_find_session(struct tls_multi *multi, const struct link_socket_actual *from,
+                             const struct session_id *sid)
+{
+    struct gc_arena gc = gc_new();
+    int i;
+    /* use session ID to match up packet with appropriate tls_session object */
+    for (i = 0; i < TM_SIZE; ++i)
+    {
+        struct tls_session *session = &multi->session[i];
+        struct key_state *ks = &session->key[KS_PRIMARY];
+
+        dmsg(
+            D_TLS_DEBUG,
+            "TLS: initial packet test, i=%d state=%s, mysid=%s, rec-sid=%s, rec-ip=%s, stored-sid=%s, stored-ip=%s",
+            i, state_name(ks->state), session_id_print(&session->session_id, &gc),
+            session_id_print(sid, &gc), print_link_socket_actual(from, &gc),
+            session_id_print(&ks->session_id_remote, &gc),
+            print_link_socket_actual(&ks->remote_addr, &gc));
+
+        if (session_id_equal(&ks->session_id_remote, sid))
+        /* found a match */
+        {
+            if (i == TM_LAME_DUCK)
+            {
+                msg(D_TLS_ERRORS, "TLS ERROR: received control packet with stale session-id=%s",
+                    session_id_print(sid, &gc));
+                i = -1;
+                goto done;
+            }
+            dmsg(D_TLS_DEBUG, "TLS: found match, session[%d], sid=%s", i,
+                 session_id_print(sid, &gc));
+            break;
+        }
+    }
+
+done:
+    gc_free(&gc);
+    return i;
+}
+
 /*
  *
  * When we are in TLS mode, this is the first routine which sees
@@ -3782,33 +3909,11 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from, 
     /* control channel packet */
     bool do_burst = false;
     bool new_link = false;
-    struct session_id sid; /* remote session ID */
 
     /* verify legal opcode */
-    if (op < P_FIRST_OPCODE || op > P_LAST_OPCODE)
+    if (!tls_pre_decrypt_verify_opcode(op, multi->opt.server, from))
     {
-        if (op == P_CONTROL_HARD_RESET_CLIENT_V1 || op == P_CONTROL_HARD_RESET_SERVER_V1)
-        {
-            msg(D_TLS_ERRORS, "Peer tried unsupported key-method 1");
-        }
-        msg(D_TLS_ERRORS, "TLS Error: unknown opcode received from %s op=%d",
-            print_link_socket_actual(from, &gc), op);
         goto error;
-    }
-
-    /* hard reset ? */
-    if (is_hard_reset_method2(op))
-    {
-        /* verify client -> server or server -> client connection */
-        if (((op == P_CONTROL_HARD_RESET_CLIENT_V2 || op == P_CONTROL_HARD_RESET_CLIENT_V3)
-             && !multi->opt.server)
-            || ((op == P_CONTROL_HARD_RESET_SERVER_V2) && multi->opt.server))
-        {
-            msg(D_TLS_ERRORS,
-                "TLS Error: client->client or server->server connection attempted from %s",
-                print_link_socket_actual(from, &gc));
-            goto error;
-        }
     }
 
     /*
@@ -3817,46 +3922,16 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from, 
     dmsg(D_TLS_DEBUG, "TLS: control channel, op=%s, IP=%s", packet_opcode_name(op),
          print_link_socket_actual(from, &gc));
 
-    /* get remote session-id */
+    struct session_id sid; /* remote session ID */
+    if (!tls_pre_decrypt_extract_session_id(from, *buf, &sid))
     {
-        struct buffer tmp = *buf;
-        buf_advance(&tmp, 1);
-        if (!session_id_read(&sid, &tmp) || !session_id_defined(&sid))
-        {
-            msg(D_TLS_ERRORS, "TLS Error: session-id not found in packet from %s",
-                print_link_socket_actual(from, &gc));
-            goto error;
-        }
+        goto error;
     }
 
-    int i;
-    /* use session ID to match up packet with appropriate tls_session object */
-    for (i = 0; i < TM_SIZE; ++i)
+    int i = tls_pre_decrypt_find_session(multi, from, &sid);
+    if (i == -1)
     {
-        struct tls_session *session = &multi->session[i];
-        struct key_state *ks = &session->key[KS_PRIMARY];
-
-        dmsg(
-            D_TLS_DEBUG,
-            "TLS: initial packet test, i=%d state=%s, mysid=%s, rec-sid=%s, rec-ip=%s, stored-sid=%s, stored-ip=%s",
-            i, state_name(ks->state), session_id_print(&session->session_id, &gc),
-            session_id_print(&sid, &gc), print_link_socket_actual(from, &gc),
-            session_id_print(&ks->session_id_remote, &gc),
-            print_link_socket_actual(&ks->remote_addr, &gc));
-
-        if (session_id_equal(&ks->session_id_remote, &sid))
-        /* found a match */
-        {
-            if (i == TM_LAME_DUCK)
-            {
-                msg(D_TLS_ERRORS, "TLS ERROR: received control packet with stale session-id=%s",
-                    session_id_print(&sid, &gc));
-                goto error;
-            }
-            dmsg(D_TLS_DEBUG, "TLS: found match, session[%d], sid=%s", i,
-                 session_id_print(&sid, &gc));
-            break;
-        }
+        goto error;
     }
 
     /*
@@ -3946,6 +4021,21 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from, 
                                    session->opt))
             {
                 goto error;
+            }
+
+            /*
+             * Do not allow incoming renegotiation unless our primary key is
+             * fully authenticated and past the deferred-auth/transition gate.
+             */
+            time_t auth_deferred_left = ks->auth_deferred_expire - now;
+            if (ks->authenticated != KS_AUTH_TRUE || auth_deferred_left > 0)
+            {
+                msg(D_TLS_ERRORS,
+                    "TLS: refusing premature incoming renegotiation request for key-id %d: "
+                    "auth=%s, auth_deferred_expire in %d seconds",
+                    ks->key_id, ks_auth_name(ks->authenticated),
+                    auth_deferred_left > 0 ? (int)auth_deferred_left : 0);
+                goto done;
             }
 
             key_state_soft_reset(session, NULL);
@@ -4479,3 +4569,7 @@ print_data:
 done:
     return BSTR(&out);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

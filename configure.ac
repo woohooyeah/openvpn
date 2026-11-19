@@ -453,7 +453,7 @@ AC_CHECK_HEADERS([ \
 ])
 AC_CHECK_HEADERS([ \
 	sys/time.h sys/ioctl.h sys/stat.h \
-	sys/mman.h sys/file.h sys/wait.h \
+	sys/mman.h sys/wait.h \
 	libgen.h stropts.h \
 	syslog.h pwd.h grp.h \
 	sys/sockio.h sys/uio.h \
@@ -561,8 +561,7 @@ AC_FUNC_FORK
 AC_CHECK_FUNCS([ \
 	daemon chroot getpwnam setuid nice dup dup2 \
 	syslog openlog mlockall getrlimit getgrnam setgid \
-	setgroups flock gettimeofday \
-	setsid chdir \
+	setgroups gettimeofday setsid chdir \
 	chsize ftruncate execve getpeereid basename dirname \
 	epoll_create strlcpy strsep strtok_r \
 ])
@@ -1249,7 +1248,7 @@ AC_DEFUN([ACL_CHECK_ADD_COMPILE_FLAGS], [
 ACL_CHECK_ADD_COMPILE_FLAGS([-Wno-stringop-truncation])
 ACL_CHECK_ADD_COMPILE_FLAGS([-Wstrict-prototypes])
 ACL_CHECK_ADD_COMPILE_FLAGS([-Wold-style-definition])
-ACL_CHECK_ADD_COMPILE_FLAGS([-Wconversion -Wno-sign-conversion])
+ACL_CHECK_ADD_COMPILE_FLAGS([-Wconversion])
 ACL_CHECK_ADD_COMPILE_FLAGS([-Wall])
 ACL_CHECK_ADD_COMPILE_FLAGS([-Wextra -Wno-unused-parameter])
 # clang doesn't have the different levels but also doesn't include it in -Wextra

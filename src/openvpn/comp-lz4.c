@@ -55,39 +55,10 @@ lz4_compress_uninit(struct compress_context *compctx)
 {
 }
 
-/* Doesn't do any actual compression anymore */
-static void
-lz4_compress(struct buffer *buf, struct buffer work, struct compress_context *compctx,
-             const struct frame *frame)
-{
-    if (buf->len <= 0)
-    {
-        return;
-    }
-
-    uint8_t comp_head_byte = NO_COMPRESS_BYTE_SWAP;
-    uint8_t *head = BPTR(buf);
-    uint8_t *tail = BEND(buf);
-    ASSERT(buf_safe(buf, 1));
-    ++buf->len;
-
-    /* move head byte of payload to tail */
-    *tail = *head;
-    *head = comp_head_byte;
-}
-
-/* Doesn't do any actual compression anymore */
-static void
-lz4v2_compress(struct buffer *buf, struct buffer work, struct compress_context *compctx,
-               const struct frame *frame)
-{
-    if (buf->len <= 0)
-    {
-        return;
-    }
-
-    compv2_escape_data_ifneeded(buf);
-}
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 static void
 do_lz4_decompress(int zlen_max, struct buffer *work, struct buffer *buf,
@@ -198,9 +169,13 @@ lz4v2_decompress(struct buffer *buf, struct buffer work, struct compress_context
     }
 }
 
-const struct compress_alg lz4_alg = { "lz4", lz4_compress_init, lz4_compress_uninit, lz4_compress,
-                                      lz4_decompress };
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+const struct compress_alg lz4_alg = { "lz4", lz4_compress_init, lz4_compress_uninit,
+                                      comp_stub_compress, lz4_decompress };
 
 const struct compress_alg lz4v2_alg = { "lz4v2", lz4v2_compress_init, lz4_compress_uninit,
-                                        lz4v2_compress, lz4v2_decompress };
+                                        compv2_stub_compress, lz4v2_decompress };
 #endif /* ENABLE_LZ4 */

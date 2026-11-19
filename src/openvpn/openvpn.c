@@ -351,6 +351,12 @@ openvpn_main(int argc, char *argv[])
 }
 
 #ifdef _WIN32
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 int
 wmain(int argc, wchar_t *wargv[])
 {
@@ -358,8 +364,21 @@ wmain(int argc, wchar_t *wargv[])
     int ret;
     int i;
 
+    /*
+     * Do not use the argv provided by the CRT. Split the command line with
+     * CommandLineToArgvW() instead, which is what the interactive service uses
+     * to validate the options. The two disagree on some quoting, e.g. "" within
+     * a quoted string, which would let options slip past the validation.
+     */
+    wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (wargv == NULL)
+    {
+        return 1;
+    }
+
     if ((argv = calloc(argc + 1, sizeof(char *))) == NULL)
     {
+        LocalFree(wargv);
         return 1;
     }
 
@@ -369,6 +388,7 @@ wmain(int argc, wchar_t *wargv[])
         argv[i] = malloc(n);
         WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, argv[i], n, NULL, NULL);
     }
+    LocalFree(wargv);
 
     ret = openvpn_main(argc, argv);
 
@@ -380,6 +400,11 @@ wmain(int argc, wchar_t *wargv[])
 
     return ret;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #else  /* ifdef _WIN32 */
 int
 main(int argc, char *argv[])

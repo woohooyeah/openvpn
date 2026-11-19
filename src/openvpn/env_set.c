@@ -439,7 +439,7 @@ make_env_array(const struct env_set *es, const bool check_allowed, struct gc_are
 {
     char **ret = NULL;
     struct env_item *e = NULL;
-    int i = 0, n = 0;
+    size_t i = 0, n = 0;
 
     /* figure length of es */
     if (es)

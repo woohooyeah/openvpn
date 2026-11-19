@@ -212,7 +212,7 @@ tls_ctx_restrict_ciphers(struct tls_root_ctx *ctx, const char *ciphers)
     ASSERT(NULL != ctx);
 
     /* Get number of ciphers */
-    int cipher_count = get_num_elements(ciphers, ':');
+    size_t cipher_count = get_num_elements(ciphers, ':');
 
     /* Allocate an array for them */
     ALLOC_ARRAY_CLEAR(ctx->allowed_ciphers, int, cipher_count + 1)
@@ -334,7 +334,7 @@ tls_ctx_set_tls_groups(struct tls_root_ctx *ctx, const char *groups)
     struct gc_arena gc = gc_new();
 
     /* Get number of groups and allocate an array in ctx */
-    int groups_count = get_num_elements(groups, ':');
+    size_t groups_count = get_num_elements(groups, ':');
     ALLOC_ARRAY_CLEAR(ctx->groups, uint16_t, groups_count + 1)
 
     /* Parse allowed ciphers, getting IDs */
@@ -481,6 +481,7 @@ tls_ctx_load_priv_file(struct tls_root_ctx *ctx, const char *priv_key_file, bool
             status = mbedtls_pk_parse_key(
                 ctx->priv_key, (const unsigned char *)priv_key_file, strlen(priv_key_file) + 1,
                 (unsigned char *)passbuf, strlen(passbuf));
+            secure_memzero(passbuf, sizeof(passbuf));
         }
     }
     else
@@ -491,6 +492,7 @@ tls_ctx_load_priv_file(struct tls_root_ctx *ctx, const char *priv_key_file, bool
             char passbuf[512] = { 0 };
             pem_password_callback(passbuf, 512, 0, NULL);
             status = mbedtls_pk_parse_keyfile(ctx->priv_key, priv_key_file, passbuf);
+            secure_memzero(passbuf, sizeof(passbuf));
         }
     }
     if (!mbed_ok(status))
@@ -767,14 +769,6 @@ my_debug(void *ctx, int level, const char *file, int line, const char *str)
     msg(my_loglevel, "mbed TLS msg (%s:%d): %s", file, line, str);
 }
 
-/*
- * Further personalise the RNG using a hash of the public key
- */
-void
-tls_ctx_personalise_random(struct tls_root_ctx *ctx)
-{
-}
-
 int
 tls_version_max(void)
 {
@@ -898,15 +892,6 @@ key_state_ssl_init(struct key_state_ssl *ks_ssl, const struct tls_root_ctx *ssl_
     mbedtls_ssl_conf_renegotiation(ks_ssl->ssl_config, MBEDTLS_SSL_RENEGOTIATION_DISABLED);
 #endif /* MBEDTLS_SSL_RENEGOTIATION */
 
-    /* Disable record splitting (for now).  OpenVPN assumes records are sent
-     * unfragmented, and changing that will require thorough review and
-     * testing.  Since OpenVPN is not susceptible to BEAST, we can just
-     * disable record splitting as a quick fix. */
-#if defined(MBEDTLS_SSL_CBC_RECORD_SPLITTING)
-    mbedtls_ssl_conf_cbc_record_splitting(ks_ssl->ssl_config,
-                                          MBEDTLS_SSL_CBC_RECORD_SPLITTING_DISABLED);
-#endif /* MBEDTLS_SSL_CBC_RECORD_SPLITTING */
-
     /* Initialise authentication information */
     (void)mbed_ok(mbedtls_ssl_conf_own_cert(ks_ssl->ssl_config, ssl_ctx->crt_chain, ssl_ctx->priv_key));
 
@@ -1018,7 +1003,7 @@ key_state_write_plaintext(struct key_state_ssl *ks, struct buffer *buf)
 
     if (1 == retval)
     {
-        memset(BPTR(buf), 0, BLEN(buf)); /* erase data just written */
+        memset(BPTR(buf), 0, BLENZ(buf)); /* erase data just written */
         buf->len = 0;
     }
 
@@ -1040,7 +1025,7 @@ key_state_write_plaintext_const(struct key_state_ssl *ks, const uint8_t *data, i
 
     ASSERT(data);
 
-    retval = mbedtls_ssl_write(ks->ctx, data, len);
+    retval = mbedtls_ssl_write(ks->ctx, data, (size_t)len);
 
     if (retval < 0)
     {
@@ -1069,7 +1054,6 @@ int
 key_state_read_ciphertext(struct key_state_ssl *ks, struct buffer *buf)
 {
     int retval = 0;
-    int len = 0;
 
     ASSERT(NULL != ks);
     ASSERT(buf);
@@ -1080,9 +1064,7 @@ key_state_read_ciphertext(struct key_state_ssl *ks, struct buffer *buf)
         return 0;
     }
 
-    len = buf_forward_capacity(buf);
-
-    retval = endless_buf_read(&ks->bio_ctx->out, BPTR(buf), len);
+    retval = endless_buf_read(&ks->bio_ctx->out, BPTR(buf), BCAP(buf));
 
     /* Error during read, check for retry error */
     if (retval < 0)
@@ -1122,7 +1104,7 @@ key_state_write_ciphertext(struct key_state_ssl *ks, struct buffer *buf)
         return 0;
     }
 
-    retval = endless_buf_write(&ks->bio_ctx->in, BPTR(buf), buf->len);
+    retval = endless_buf_write(&ks->bio_ctx->in, BPTR(buf), BLENZ(buf));
 
     if (retval < 0)
     {
@@ -1144,7 +1126,7 @@ key_state_write_ciphertext(struct key_state_ssl *ks, struct buffer *buf)
     /* successful write */
     dmsg(D_HANDSHAKE_VERBOSE, "write tls_write_ciphertext %d bytes", retval);
 
-    memset(BPTR(buf), 0, BLEN(buf)); /* erase data just written */
+    memset(BPTR(buf), 0, BLENZ(buf)); /* erase data just written */
     buf->len = 0;
 
     return 1;
@@ -1154,7 +1136,6 @@ int
 key_state_read_plaintext(struct key_state_ssl *ks, struct buffer *buf)
 {
     int retval = 0;
-    int len = 0;
 
     ASSERT(NULL != ks);
     ASSERT(buf);
@@ -1165,9 +1146,7 @@ key_state_read_plaintext(struct key_state_ssl *ks, struct buffer *buf)
         return 0;
     }
 
-    len = buf_forward_capacity(buf);
-
-    retval = mbedtls_ssl_read(ks->ctx, BPTR(buf), len);
+    retval = mbedtls_ssl_read(ks->ctx, BPTR(buf), BCAP(buf));
 
     /* Error during read, check for retry error */
     if (retval < 0)

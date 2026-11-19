@@ -154,7 +154,7 @@ mutate_ncp_cipher_list(const char *list, struct gc_arena *gc)
             }
 
             /* Ensure buffer has capacity for cipher name + : + \0 */
-            if (buf_forward_capacity(&new_list) < (int)strlen(ovpn_cipher_name) + 2)
+            if (buf_forward_capacity(&new_list) < strlen(ovpn_cipher_name) + 2)
             {
                 msg(M_WARN, "Length of --data-ciphers is over the "
                             "limit of 127 chars");
@@ -393,6 +393,11 @@ get_p2p_ncp_cipher(struct tls_session *session, const char *peer_info, struct gc
     return ret;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static void
 p2p_ncp_set_options(struct tls_multi *multi, struct tls_session *session, const char *common_cipher)
 {
@@ -558,8 +563,7 @@ replace_default_in_ncp_ciphers_option(struct options *o, const char *replace)
     uint8_t *ncp_ciphers = gc_malloc(ncp_ciphers_len, true, &o->gc);
 
     struct buffer ncp_ciphers_buf;
-    ASSERT(ncp_ciphers_len <= INT_MAX);
-    buf_set_write(&ncp_ciphers_buf, ncp_ciphers, (int)ncp_ciphers_len);
+    buf_set_write(&ncp_ciphers_buf, ncp_ciphers, ncp_ciphers_len);
 
     const char *def = strstr(o->ncp_ciphers, search);
 
@@ -575,6 +579,10 @@ replace_default_in_ncp_ciphers_option(struct options *o, const char *replace)
 
     o->ncp_ciphers = (char *)ncp_ciphers;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /**
  * Checks for availibility of Chacha20-Poly1305 and sets

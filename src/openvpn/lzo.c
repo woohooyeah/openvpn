@@ -40,6 +40,11 @@
 #include "memdbg.h"
 
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static void
 lzo_compress_init(struct compress_context *compctx)
 {
@@ -62,14 +67,6 @@ lzo_compress_uninit(struct compress_context *compctx)
 {
     free(compctx->wu.lzo.wmem);
     compctx->wu.lzo.wmem = NULL;
-}
-
-static void
-lzo_compress(struct buffer *buf, struct buffer work, struct compress_context *compctx,
-             const struct frame *frame)
-{
-    uint8_t *header = buf_prepend(buf, 1);
-    *header = NO_COMPRESS_BYTE;
 }
 
 static void
@@ -120,6 +117,10 @@ lzo_decompress(struct buffer *buf, struct buffer work, struct compress_context *
     }
 }
 
-const struct compress_alg lzo_alg = { "lzo", lzo_compress_init, lzo_compress_uninit, lzo_compress,
-                                      lzo_decompress };
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+const struct compress_alg lzo_alg = { "lzo", lzo_compress_init, lzo_compress_uninit,
+                                      comp_stub_compress, lzo_decompress };
 #endif /* ENABLE_LZO */

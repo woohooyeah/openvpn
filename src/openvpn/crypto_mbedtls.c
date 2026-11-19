@@ -821,6 +821,11 @@ hmac_ctx_final(hmac_ctx_t *ctx, uint8_t *dst)
     ASSERT(hmac_length == dst_size);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /*
  * Generate the hash required by for the \c tls1_PRF function.
  *
@@ -1013,8 +1018,7 @@ show_available_ciphers(void)
     printf("The following ciphers and cipher modes are available for use\n"
            "with " PACKAGE_NAME ".  Each cipher shown below may be used as a\n"
            "parameter to the --data-ciphers (or --cipher) option.  Using a\n"
-           "GCM or CBC mode is recommended.  In static key mode only CBC\n"
-           "mode is allowed.\n\n");
+           "GCM or CBC mode is recommended.\n\n");
 #endif
 
     for (size_t i = 0; i < cipher_info_table_entries; i++)
@@ -1149,5 +1153,9 @@ crypto_pem_decode(const char *name, struct buffer *dst, const struct buffer *src
     gc_free(&gc);
     return ret;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* defined(ENABLE_CRYPTO_MBEDTLS) */

@@ -71,12 +71,13 @@ xkey_digest(const unsigned char *src, size_t srclen, unsigned char *buf, size_t 
     }
 
     unsigned int len = (unsigned int)*buflen;
-    if (EVP_Digest(src, srclen, buf, &len, md, NULL) != 1)
+    int ret = EVP_Digest(src, srclen, buf, &len, md, NULL);
+    EVP_MD_free(md);
+    if (ret != 1)
     {
         msg(M_WARN, "WARN: xkey_digest: EVP_Digest failed");
         return 0;
     }
-    EVP_MD_free(md);
 
     *buflen = len;
     return 1;
@@ -146,6 +147,11 @@ xkey_load_generic_key(OSSL_LIB_CTX *libctx, void *handle, EVP_PKEY *pubkey,
 }
 
 #ifdef ENABLE_MANAGEMENT
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 /**
  * Signature callback for xkey_provider with management-external-key
  *
@@ -276,6 +282,10 @@ xkey_management_sign(void *unused, unsigned char *sig, size_t *siglen, const uns
 
     return (*siglen > 0);
 }
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #endif /* ENABLE MANAGEMENT */
 
 /**

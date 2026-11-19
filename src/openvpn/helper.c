@@ -148,6 +148,11 @@ helper_setdefault_topology(struct options *o)
 }
 
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /*
  * Process server, server-bridge, and client helper
  * directives after the parameters themselves have been
@@ -264,12 +269,6 @@ helper_client_server(struct options *o)
         if (o->server_bridge_defined || o->server_bridge_proxy_dhcp)
         {
             msg(M_USAGE, "--server and --server-bridge cannot be used together");
-        }
-
-        if (o->shared_secret_file)
-        {
-            msg(M_USAGE,
-                "--server and --secret cannot be used together (you must use SSL/TLS keys)");
         }
 
         if (!(o->server_flags & SF_NOPOOL) && o->ifconfig_pool_defined)
@@ -461,12 +460,6 @@ helper_client_server(struct options *o)
                 "--server-bridge already defines an ifconfig-pool, so you can't also specify --ifconfig-pool explicitly");
         }
 
-        if (o->shared_secret_file)
-        {
-            msg(M_USAGE,
-                "--server-bridge and --secret cannot be used together (you must use SSL/TLS keys)");
-        }
-
         if (dev != DEV_TYPE_TAP)
         {
             msg(M_USAGE, "--server-bridge directive only makes sense with --dev tap");
@@ -518,6 +511,10 @@ helper_client_server(struct options *o)
 
     gc_free(&gc);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  *

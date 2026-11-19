@@ -354,13 +354,38 @@ ReturnLastError(HANDLE pipe, LPCWSTR func)
     ReturnError(pipe, GetLastError(), func, 1, &exit_event);
 }
 
+/**
+ * Check whether the user options start with a non-option
+ *
+ * openvpn.exe takes a lone argument as the config file only when there are
+ * no other arguments, and takes non-options after the --msg-channel handle
+ * as its extra parameters.
+ *
+ * @param  cmdline  openvpn.exe command line built by the service
+ *
+ * @return BOOL to indicate if the first user argument is not an option
+ */
+static BOOL
+StartsWithNonOption(const WCHAR *cmdline)
+{
+    int argc;
+    WCHAR **argv = CommandLineToArgvW(cmdline, &argc);
+    /* "openvpn --msg-channel <handle> <arg>..." */
+    BOOL ret = argv && argc > 3 && !IsOption(argv[3]);
+
+    LocalFree(argv);
+    return ret;
+}
+
 /*
  * Validate options against a white list. Also check the config_file is
  * inside the config_dir. The white list is defined in validate.c
+ * The options are taken from the command line openvpn is started with,
+ * so that they are split exactly like openvpn.exe does it.
  * Returns true on success, false on error with reason set in errmsg.
  */
 static BOOL
-ValidateOptions(HANDLE pipe, const WCHAR *workdir, const WCHAR *options, WCHAR *errmsg,
+ValidateOptions(HANDLE pipe, const WCHAR *workdir, const WCHAR *cmdline, WCHAR *errmsg,
                 DWORD capacity)
 {
     WCHAR **argv;
@@ -375,7 +400,10 @@ ValidateOptions(HANDLE pipe, const WCHAR *workdir, const WCHAR *options, WCHAR *
                         L" only with admin approval. This error may be avoided"
                         L" by adding your account to the \"%ls\" group";
 
-    argv = CommandLineToArgvW(options, &argc);
+    /* Skip "openvpn --msg-channel <handle>" added by the service */
+    const int first = 3;
+
+    argv = CommandLineToArgvW(cmdline, &argc);
 
     if (!argv)
     {
@@ -385,28 +413,13 @@ ValidateOptions(HANDLE pipe, const WCHAR *workdir, const WCHAR *options, WCHAR *
         goto out;
     }
 
-    /* Note: argv[0] is the first option */
-    if (argc < 1) /* no options */
+    if (argc <= first) /* no options */
     {
         ret = TRUE;
         goto out;
     }
 
-    /*
-     * If only one argument, it is the config file
-     */
-    if (argc == 1)
-    {
-        WCHAR *argv_tmp[2] = { L"--config", argv[0] };
-
-        if (!CheckOption(workdir, 2, argv_tmp, &settings))
-        {
-            swprintf(errmsg, capacity, msg1, argv[0], workdir, settings.ovpn_admin_group);
-        }
-        goto out;
-    }
-
-    for (i = 0; i < argc; ++i)
+    for (i = first; i < argc; ++i)
     {
         if (!IsOption(argv[i]))
         {
@@ -520,6 +533,10 @@ FreeStartupData(STARTUP_DATA *sud)
     free(sud->directory);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 static SOCKADDR_INET
 sockaddr_inet(short family, const inet_address_t *addr)
@@ -1750,10 +1767,10 @@ UndoDnsSearchDomains(dns_domains_undo_data_t *undo_data)
         RemoveDnsSearchDomains(dns_searchlist_key, undo_data->domains);
         RegCloseKey(dns_searchlist_key);
         ApplyDnsSettings(gpol);
-
-        free(undo_data->domains);
-        undo_data->domains = NULL;
     }
+
+    free(undo_data->domains);
+    undo_data->domains = NULL;
 }
 
 /**
@@ -1819,13 +1836,19 @@ SetDnsSearchDomains(PCSTR itf_name, PCSTR domains, PBOOL gpol, undo_lists_t *lis
         strncpy_s(undo_data->itf_name, sizeof(undo_data->itf_name), itf_name, _TRUNCATE);
         undo_data->domains = wide_domains;
 
-        if (AddDnsSearchDomains(list_key, have_list, wide_domains) == FALSE
-            || AddListItem(&(*lists)[undo_domains], undo_data) != NO_ERROR)
+        /* Add undo information first in case there's no heap left */
+        if (AddListItem(&(*lists)[undo_domains], undo_data) != NO_ERROR)
         {
-            RemoveDnsSearchDomains(list_key, wide_domains);
             free(wide_domains);
             free(undo_data);
-            undo_data = NULL;
+            goto out;
+        }
+
+        if (!AddDnsSearchDomains(list_key, have_list, wide_domains))
+        {
+            RemoveListItem(&(*lists)[undo_domains], CmpAny, NULL);
+            free(wide_domains);
+            free(undo_data);
             goto out;
         }
     }
@@ -2124,6 +2147,24 @@ SetNameServerAddresses(PWSTR itf_id, const nrpt_address_t *addresses)
 }
 
 /**
+ * Remove trailing delimiters from a name server list
+ *
+ * @param  addrs      NUL-terminated list of addresses
+ *
+ * @return the size of the list in bytes, including the terminating NUL
+ */
+static DWORD
+TrimNameServers(PSTR addrs)
+{
+    size_t len = strlen(addrs);
+    while (len && (addrs[len - 1] == ',' || addrs[len - 1] == ' '))
+    {
+        addrs[--len] = '\0';
+    }
+    return (DWORD)len + 1;
+}
+
+/**
  * Get DNS server IPv4 addresses of an interface
  *
  * @param  itf_key    registry key of the IPv4 interface data
@@ -2136,6 +2177,7 @@ SetNameServerAddresses(PWSTR itf_id, const nrpt_address_t *addresses)
 static LSTATUS
 GetItfDnsServersV4(HKEY itf_key, PSTR addrs, PDWORD size)
 {
+    addrs[0] = '\0';
     addrs[*size - 1] = '\0';
 
     LSTATUS err;
@@ -2151,7 +2193,7 @@ GetItfDnsServersV4(HKEY itf_key, PSTR addrs, PDWORD size)
     if (!strchr(addrs, '.') && IsDhcpEnabled(itf_key))
     {
         s = *size;
-        RegGetValueA(itf_key, NULL, "DhcpNameServer", RRF_RT_REG_SZ, NULL, (PBYTE)addrs, &s);
+        err = RegGetValueA(itf_key, NULL, "DhcpNameServer", RRF_RT_REG_SZ, NULL, (PBYTE)addrs, &s);
         if (err)
         {
             *size = 0;
@@ -2161,7 +2203,7 @@ GetItfDnsServersV4(HKEY itf_key, PSTR addrs, PDWORD size)
 
     if (strchr(addrs, '.'))
     {
-        *size = s;
+        *size = TrimNameServers(addrs);
         return NO_ERROR;
     }
 
@@ -2174,13 +2216,15 @@ GetItfDnsServersV4(HKEY itf_key, PSTR addrs, PDWORD size)
  *
  * @param  itf_key    registry key of the IPv6 interface data
  * @param  addrs      pointer to the buffer addresses are returned in
- * @param  size       pointer to the size of the buffer
+ * @param  size       pointer to the size of the buffer, contains the
+ *                    size of the addresses on return
  *
  * @return LSTATUS NO_ERROR on success, a Windows error code otherwise
  */
 static LSTATUS
 GetItfDnsServersV6(HKEY itf_key, PSTR addrs, PDWORD size)
 {
+    addrs[0] = '\0';
     addrs[*size - 1] = '\0';
 
     LSTATUS err;
@@ -2217,7 +2261,7 @@ GetItfDnsServersV6(HKEY itf_key, PSTR addrs, PDWORD size)
                 s--;
             }
 
-            if (inet_ntop(AF_INET6, &in_addrs[i], pos, s) != NULL)
+            if (inet_ntop(AF_INET6, &in_addrs[i], pos, s) == NULL)
             {
                 *size = 0;
                 return ERROR_MORE_DATA;
@@ -2227,12 +2271,11 @@ GetItfDnsServersV6(HKEY itf_key, PSTR addrs, PDWORD size)
             pos += addr_len;
             s -= (DWORD)addr_len;
         }
-        s = (DWORD)strlen(addrs) + 1;
     }
 
     if (strchr(addrs, ':'))
     {
-        *size = s;
+        *size = TrimNameServers(addrs);
         return NO_ERROR;
     }
 
@@ -2278,6 +2321,7 @@ ListContainsDomain(PCWSTR list, PCWSTR domain, size_t len)
  * In case of an error \p size is set to 0 and the contents of \p domains
  * are invalid.
  * Note that domains are deleted from the string if they match a search domain.
+ * Empty entries (e.g. from leading, trailing or double commas) are skipped.
  *
  * @param[in]     search_domains  optional string of comma separated search domains
  * @param[in,out] domains         buffer that contains the input comma-separated
@@ -2319,7 +2363,7 @@ ConvertItfDnsDomains(PCWSTR search_domains, PWSTR domains, PDWORD size, const DW
         PWCHAR comma = wcschr(domain, L',');
         size_t domain_len = comma ? (size_t)(comma - domain) : wcslen(domain);
 
-        if (ListContainsDomain(search_domains, domain, domain_len))
+        if (domain_len == 0 || ListContainsDomain(search_domains, domain, domain_len))
         {
             /* Skip this domain */
             domain = comma ? comma + 1 : domain + domain_len;
@@ -2372,7 +2416,7 @@ done:
 /**
  * Return interface specific domain suffix(es)
  *
- * The \p domains paramter will be set to a MULTI_SZ domains string.
+ * The \p domains parameter will be set to a MULTI_SZ domains string.
  * In case of an error or if no domains are found for the interface
  * \p size is set to 0 and the contents of \p domains are invalid.
  * Note that the domains could have been set by DHCP or manually.
@@ -2557,6 +2601,11 @@ GetNrptExcludeData(PCWSTR search_domains, nrpt_exclude_data_t *data, size_t data
                 MsgToEventLog(M_SYSERR, L"%S: could not read interface %s v6 name servers (%ld)",
                               __func__, itf_guid, err);
                 goto next_itf;
+            }
+            if (v4_addrs_size && v6_addrs_size)
+            {
+                /* Join the lists: replace the v4 terminating NUL with a delimiter */
+                data[i].addresses[v4_addrs_size - 1] = ',';
             }
         }
 
@@ -3009,7 +3058,7 @@ HandleDNSConfigNrptMessage(const nrpt_dns_cfg_message_t *msg, DWORD ovpn_pid, un
     LSTATUS err = OpenNrptBaseKey(&key, &gpol_nrpt);
     if (err)
     {
-        goto out;
+        return err;
     }
 
     /* Add undo information first in case there's no heap left */
@@ -3060,6 +3109,7 @@ HandleDNSConfigNrptMessage(const nrpt_dns_cfg_message_t *msg, DWORD ovpn_pid, un
     ApplyDnsSettings(gpol_nrpt || gpol_list);
 
 out:
+    RegCloseKey(key);
     return err;
 }
 
@@ -3416,6 +3466,133 @@ Undo(undo_lists_t *lists)
     }
 }
 
+/**
+ * Check if an environment variable is user-specific
+ *
+ * @param  var  "name=value" string of the variable
+ *
+ * @return BOOL to indicate if the variable is user-specific
+ */
+static BOOL
+IsUserEnvVar(PCWSTR var)
+{
+    static PCWSTR user_vars[] = { L"APPDATA=", L"LOCALAPPDATA=", L"TEMP=", L"TMP=",
+                                  L"USERDOMAIN=", L"USERNAME=", L"USERPROFILE=" };
+
+    for (size_t i = 0; i < _countof(user_vars); ++i)
+    {
+        if (wcsncmp(var, user_vars[i], wcslen(user_vars[i])) == 0)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/**
+ * Return the size of an environment block
+ *
+ * @param  env  environment block to get the size of
+ *
+ * @return size_t size of @p env in bytes, including the terminating empty string
+ */
+static size_t
+EnvBlockSize(PCWSTR env)
+{
+    PCWSTR var = env;
+    while (*var)
+    {
+        var += wcslen(var) + 1;
+    }
+    return ((size_t)(var - env) + 1) * sizeof(*env);
+}
+
+/**
+ * Merge the environment for the openvpn process
+ *
+ * The result consists of the variables in @p sys_env, except the
+ * user-specific ones, which are taken from @p usr_env instead. Other
+ * variables the user defined are not passed on, as they could be used to
+ * load code into the openvpn process.
+ *
+ * @param  sys_env  system wide environment block
+ * @param  usr_env  environment block of the user
+ *
+ * @return PWSTR to the merged environment block, or NULL if out of memory.
+ *         It must be released with free().
+ */
+static PWSTR
+MergeOpenvpnEnvironment(PCWSTR sys_env, PCWSTR usr_env)
+{
+    PWSTR block = malloc(EnvBlockSize(sys_env) + EnvBlockSize(usr_env));
+    if (!block)
+    {
+        return NULL;
+    }
+
+    PWSTR pos = block;
+    for (PCWSTR var = sys_env; *var; var += wcslen(var) + 1)
+    {
+        if (!IsUserEnvVar(var))
+        {
+            size_t len = wcslen(var) + 1;
+            wmemcpy(pos, var, len);
+            pos += len;
+        }
+    }
+    for (PCWSTR var = usr_env; *var; var += wcslen(var) + 1)
+    {
+        if (IsUserEnvVar(var))
+        {
+            size_t len = wcslen(var) + 1;
+            wmemcpy(pos, var, len);
+            pos += len;
+        }
+    }
+    *pos = L'\0';
+
+    return block;
+}
+
+/**
+ * Create the environment for the openvpn process
+ *
+ * See MergeOpenvpnEnvironment() for what it contains.
+ *
+ * @param  token  HANDLE of the token of the user openvpn is run for
+ * @param  env    pointer the environment block is returned in. It must be
+ *                released with free().
+ *
+ * @return BOOL to indicate success or failure, the reason for a failure is
+ *         set as last error
+ */
+static BOOL
+CreateOpenvpnEnvironment(HANDLE token, PWSTR *env)
+{
+    LPVOID sys_env = NULL;
+    LPVOID usr_env = NULL;
+    BOOL ret = FALSE;
+
+    if (!CreateEnvironmentBlock(&sys_env, NULL, FALSE)
+        || !CreateEnvironmentBlock(&usr_env, token, FALSE))
+    {
+        goto out;
+    }
+
+    *env = MergeOpenvpnEnvironment(sys_env, usr_env);
+    if (!*env)
+    {
+        SetLastError(ERROR_OUTOFMEMORY);
+        goto out;
+    }
+    ret = TRUE;
+
+out:
+    DestroyEnvironmentBlock(sys_env);
+    DestroyEnvironmentBlock(usr_env);
+    return ret;
+}
+
 static DWORD WINAPI
 RunOpenvpn(LPVOID p)
 {
@@ -3429,7 +3606,7 @@ RunOpenvpn(LPVOID p)
     STARTUP_DATA sud = { 0, 0, 0 };
     STARTUPINFOW startup_info;
     PROCESS_INFORMATION proc_info;
-    LPVOID user_env = NULL;
+    PWSTR ovpn_env = NULL;
     WCHAR ovpn_pipe_name[256]; /* The entire pipe name string can be up to 256 characters long
                                   according to MSDN. */
     LPCWSTR exe_path;
@@ -3443,7 +3620,8 @@ RunOpenvpn(LPVOID p)
                                         .lpSecurityDescriptor = NULL,
                                         .bInheritHandle = TRUE };
 
-    PACL ovpn_dacl;
+    PACL ovpn_dacl = NULL;
+    PSECURITY_DESCRIPTOR pSD = NULL;
     EXPLICIT_ACCESS ea[2];
     SECURITY_DESCRIPTOR ovpn_sd;
     SECURITY_ATTRIBUTES ovpn_sa = { .nLength = sizeof(ovpn_sa),
@@ -3527,21 +3705,6 @@ RunOpenvpn(LPVOID p)
         goto out;
     }
 
-    /*
-     * Only authorized users are allowed to use any command line options or
-     * have the config file in locations other than the global config directory.
-     *
-     * Check options are white-listed and config is in the global directory
-     * OR user is authorized to run any config.
-     */
-    if (!ValidateOptions(pipe, sud.directory, sud.options, errmsg, _countof(errmsg))
-        && !IsAuthorizedUser(ovpn_user->User.Sid, imp_token, settings.ovpn_admin_group,
-                             settings.ovpn_service_user))
-    {
-        ReturnError(pipe, ERROR_STARTUP_DATA, errmsg, 1, &exit_event);
-        goto out;
-    }
-
     /* OpenVPN process DACL entry for access by service and user */
     ea[0].grfAccessPermissions = SPECIFIC_RIGHTS_ALL | STANDARD_RIGHTS_ALL;
     ea[0].grfAccessMode = SET_ACCESS;
@@ -3574,10 +3737,59 @@ RunOpenvpn(LPVOID p)
         goto out;
     }
 
+    /*
+     * Add a SACL to the openvpn security descriptor with a medium integrity label ACE.
+     * This makes it possible to still query the process info and terminate the process
+     * from the GUI. The high integrity label assigned to the process' primary token
+     * would otherwise prevent this.
+     */
+    BYTE medium_sid[SECURITY_MAX_SID_SIZE];
+    DWORD medium_sid_size = sizeof(medium_sid);
+    DWORD sacl_buf[(sizeof(ACL) + sizeof(SYSTEM_MANDATORY_LABEL_ACE) + SECURITY_MAX_SID_SIZE) / sizeof(DWORD) + 1]; /* must be DWORD aligned */
+    PACL sacl = (PACL)sacl_buf;
+    if (!CreateWellKnownSid(WinMediumLabelSid, NULL, medium_sid, &medium_sid_size)
+        || !InitializeAcl(sacl, (DWORD)sizeof(sacl_buf), ACL_REVISION)
+        || !AddMandatoryAce(sacl, ACL_REVISION, 0, SYSTEM_MANDATORY_LABEL_NO_WRITE_UP, medium_sid)
+        || !SetSecurityDescriptorSacl(&ovpn_sd, TRUE, sacl, FALSE))
+    {
+        ReturnLastError(pipe, L"SetSecurityDescriptorSacl");
+        goto out;
+    }
+
     /* Create primary token from impersonation token */
     if (!DuplicateTokenEx(imp_token, TOKEN_ALL_ACCESS, NULL, 0, TokenPrimary, &pri_token))
     {
         ReturnLastError(pipe, L"DuplicateTokenEx");
+        goto out;
+    }
+
+    /*
+     * Run openvpn at high integrity, so that the user cannot write to its threads.
+     * Raising the level requires the privileges of the service, so stop
+     * impersonating the user while doing it.
+     */
+    BYTE high_sid[SECURITY_MAX_SID_SIZE];
+    DWORD high_sid_size = sizeof(high_sid);
+    if (!RevertToSelf())
+    {
+        ReturnLastError(pipe, L"RevertToSelf");
+        goto out;
+    }
+    if (!CreateWellKnownSid(WinHighLabelSid, NULL, high_sid, &high_sid_size))
+    {
+        ReturnLastError(pipe, L"CreateWellKnownSid");
+        goto out;
+    }
+    TOKEN_MANDATORY_LABEL label = { .Label = { .Sid = high_sid, .Attributes = SE_GROUP_INTEGRITY } };
+    DWORD label_size = sizeof(label) + GetLengthSid(high_sid);
+    if (!SetTokenInformation(pri_token, TokenIntegrityLevel, &label, label_size))
+    {
+        ReturnLastError(pipe, L"SetTokenInformation");
+        goto out;
+    }
+    if (!SetThreadToken(NULL, imp_token))
+    {
+        ReturnLastError(pipe, L"SetThreadToken");
         goto out;
     }
 
@@ -3623,7 +3835,6 @@ RunOpenvpn(LPVOID p)
      */
 
     SECURITY_ATTRIBUTES sa;
-    PSECURITY_DESCRIPTOR pSD = NULL;
     LPCWSTR szSDDL = L"D:(A;;GA;;;SY)(A;;GA;;;OW)";
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
             szSDDL, SDDL_REVISION_1, &pSD, NULL))
@@ -3669,12 +3880,35 @@ RunOpenvpn(LPVOID p)
     /* there seem to be no common printf specifier that works on all
      * mingw/msvc platforms without trickery, so convert to void* and use
      * PRIuPTR to print that as best compromise */
-    swprintf(cmdline, cmdline_size, L"openvpn %ls --msg-channel %" PRIuPTR, sud.options,
-             (uintptr_t)svc_pipe);
+    swprintf(cmdline, cmdline_size, L"openvpn --msg-channel %" PRIuPTR L" %ls",
+             (uintptr_t)svc_pipe, sud.options);
 
-    if (!CreateEnvironmentBlock(&user_env, imp_token, FALSE))
+    if (StartsWithNonOption(cmdline))
     {
-        ReturnLastError(pipe, L"CreateEnvironmentBlock");
+        ReturnError(pipe, ERROR_STARTUP_DATA,
+                    L"Options must start with an option, pass the config file with --config", 1,
+                    &exit_event);
+        goto out;
+    }
+
+    /*
+     * Only authorized users are allowed to use any command line options or
+     * have the config file in locations other than the global config directory.
+     *
+     * Check options are white-listed and config is in the global directory
+     * OR user is authorized to run any config.
+     */
+    if (!ValidateOptions(pipe, sud.directory, cmdline, errmsg, _countof(errmsg))
+        && !IsAuthorizedUser(ovpn_user->User.Sid, imp_token, settings.ovpn_admin_group,
+                             settings.ovpn_service_user))
+    {
+        ReturnError(pipe, ERROR_STARTUP_DATA, errmsg, 1, &exit_event);
+        goto out;
+    }
+
+    if (!CreateOpenvpnEnvironment(imp_token, &ovpn_env))
+    {
+        ReturnLastError(pipe, L"CreateOpenvpnEnvironment");
         goto out;
     }
 
@@ -3689,7 +3923,7 @@ RunOpenvpn(LPVOID p)
     /* TODO: make sure HKCU is correct or call LoadUserProfile() */
     if (!CreateProcessAsUserW(pri_token, exe_path, cmdline, &ovpn_sa, NULL, TRUE,
                               settings.priority | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-                              user_env, sud.directory, &startup_info, &proc_info))
+                              ovpn_env, sud.directory, &startup_info, &proc_info))
     {
         ReturnLastError(pipe, L"CreateProcessAsUser");
         goto out;
@@ -3763,7 +3997,9 @@ out:
     free(ovpn_user);
     free(svc_user);
     free(cmdline);
-    DestroyEnvironmentBlock(user_env);
+    LocalFree(pSD);
+    LocalFree(ovpn_dacl);
+    free(ovpn_env);
     FreeStartupData(&sud);
     CloseHandleEx(&proc_info.hProcess);
     CloseHandleEx(&proc_info.hThread);
@@ -3780,6 +4016,9 @@ out:
     return 0;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 static DWORD WINAPI
 ServiceCtrlInteractive(DWORD ctrl_code, DWORD event, LPVOID data, LPVOID ctx)

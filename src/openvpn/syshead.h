@@ -127,10 +127,6 @@ typedef SSIZE_T ssize_t;
 #include <fcntl.h>
 #endif
 
-#ifdef HAVE_SYS_FILE_H
-#include <sys/file.h>
-#endif
-
 /* These headers belong to C99 and should be always be present */
 #include <stdlib.h>
 #include <inttypes.h>
@@ -482,11 +478,6 @@ socket_defined(const socket_descriptor_t sd)
 #else
 #define UNIX_SOCK_SUPPORT 0
 #endif
-
-/*
- * Should we include proxy digest auth functionality
- */
-#define PROXY_DIGEST_AUTH 1
 
 /*
  * Do we have CryptoAPI capability?

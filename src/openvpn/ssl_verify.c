@@ -400,6 +400,11 @@ verify_peer_cert(const struct tls_options *opt, openvpn_x509_cert_t *peer_cert, 
     return SUCCESS;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /*
  * Export the subject, common_name, and raw certificate fields to the
  * environment for later verification by scripts and plugins.
@@ -515,7 +520,6 @@ verify_cert_call_command(const char *verify_command, struct env_set *es, int cer
                          char *subject)
 {
     int ret;
-    struct gc_arena gc = gc_new();
     struct argv argv = argv_new();
 
     setenv_str(es, "script_type", "tls-verify");
@@ -526,7 +530,6 @@ verify_cert_call_command(const char *verify_command, struct env_set *es, int cer
     argv_msg_prefix(D_TLS_DEBUG, &argv, "TLS: executing verify command");
     ret = openvpn_run_script(&argv, es, 0, "--tls-verify script");
 
-    gc_free(&gc);
     argv_free(&argv);
 
     if (ret)
@@ -699,6 +702,13 @@ verify_cert(struct tls_session *session, openvpn_x509_cert_t *cert, int cert_dep
                 goto cleanup;
         }
 
+        if (BLEN(&cert_fp) == 0)
+        {
+            msg(D_TLS_ERRORS, "TLS Error: cannot compute the certificate fingerprint for "
+                              "--verify-hash/--peer-fingerprint");
+            goto cleanup;
+        }
+
         const struct verify_hash_list *current_hash = opt->verify_hash;
 
         while (current_hash)
@@ -805,6 +815,10 @@ cleanup:
     return ret;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 /* ***************************************************************************
  * Functions for the management of deferred authentication when using
  * user/password authentication.
@@ -886,6 +900,11 @@ check_auth_pending_method(const char *peer_info, const char *method)
     return supported;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /**
  *  Checks if the deferred state should also send auth pending
  *  request to the client. Also removes the auth_pending control file
@@ -959,6 +978,10 @@ key_state_check_auth_pending_file(struct auth_deferred_status *ads,
     key_state_rm_auth_pending_file(ads);
     return ret;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /**
  *  Removes auth_pending and auth_control files from file system
@@ -1250,22 +1273,24 @@ bool
 tls_authenticate_key(struct tls_multi *multi, const unsigned int mda_key_id, const bool auth,
                      const char *client_reason)
 {
-    bool ret = false;
+    struct key_state *ks = NULL;
     if (multi)
     {
-        int i;
         auth_set_client_reason(multi, client_reason);
-        for (i = 0; i < KEY_SCAN_SIZE; ++i)
+        ks = get_key_by_management_key_id(multi, mda_key_id);
+
+        if (ks)
         {
-            struct key_state *ks = get_key_scan(multi, i);
-            if (ks->mda_key_id == mda_key_id)
-            {
-                ks->mda_status = auth ? ACF_SUCCEEDED : ACF_FAILED;
-                ret = true;
-            }
+            ks->mda_status = auth ? ACF_SUCCEEDED : ACF_FAILED;
+        }
+        else
+        {
+            msg(D_TLS_DEBUG_LOW,
+                "%s: no key state found for management key id %u",
+                __func__, mda_key_id);
         }
     }
-    return ret;
+    return (bool)ks;
 }
 #endif /* ifdef ENABLE_MANAGEMENT */
 
@@ -1521,18 +1546,9 @@ verify_user_pass_plugin(struct tls_session *session, struct tls_multi *multi,
 
 
 #ifdef ENABLE_MANAGEMENT
-/*
- * management deferred internal ssl_verify.c status codes
- */
-#define KMDA_ERROR   0
-#define KMDA_SUCCESS 1
-#define KMDA_UNDEF   2
-#define KMDA_DEF     3
-
-static int
+static void
 verify_user_pass_management(struct tls_session *session, const struct user_pass *up)
 {
-    int retval = KMDA_ERROR;
     const struct key_state *ks = &session->key[KS_PRIMARY]; /* primary key */
 
     /* set username/password in private env space */
@@ -1545,10 +1561,6 @@ verify_user_pass_management(struct tls_session *session, const struct user_pass 
     }
 
     setenv_del(session->opt->es, "password");
-
-    retval = KMDA_SUCCESS;
-
-    return retval;
 }
 #endif /* ifdef ENABLE_MANAGEMENT */
 
@@ -1613,12 +1625,7 @@ verify_user_pass(struct user_pass *up, struct tls_multi *multi, struct tls_sessi
     ASSERT(up && !up->protected);
 
 #ifdef ENABLE_MANAGEMENT
-    int man_def_auth = KMDA_UNDEF;
-
-    if (management_enable_def_auth(management))
-    {
-        man_def_auth = KMDA_DEF;
-    }
+    const bool man_def_auth = management_enable_def_auth(management);
 #endif
 
     /* enforce character class restrictions in username/password */
@@ -1658,7 +1665,7 @@ verify_user_pass(struct user_pass *up, struct tls_multi *multi, struct tls_sessi
          * using the same session ID and initial timestamp in new tokens */
         if (!multi->auth_token_initial && (ks->auth_token_state_flags & AUTH_TOKEN_HMAC_OK))
         {
-            multi->auth_token_initial = strdup(up->password);
+            multi->auth_token_initial = string_alloc(up->password, NULL);
         }
 
         if (session->opt->auth_token_call_auth)
@@ -1706,9 +1713,9 @@ verify_user_pass(struct user_pass *up, struct tls_multi *multi, struct tls_sessi
     if (!skip_auth)
     {
 #ifdef ENABLE_MANAGEMENT
-        if (man_def_auth == KMDA_DEF)
+        if (man_def_auth)
         {
-            man_def_auth = verify_user_pass_management(session, up);
+            verify_user_pass_management(session, up);
         }
 #endif
         if (plugin_defined(session->opt->plugins, OPENVPN_PLUGIN_AUTH_USER_PASS_VERIFY))
@@ -1736,11 +1743,7 @@ verify_user_pass(struct user_pass *up, struct tls_multi *multi, struct tls_sessi
     bool script_ok = script_status == OPENVPN_PLUGIN_FUNC_SUCCESS
                      || script_status == OPENVPN_PLUGIN_FUNC_DEFERRED;
 
-    if (script_ok && plugin_ok && tls_lock_username(multi, up->username)
-#ifdef ENABLE_MANAGEMENT
-        && man_def_auth != KMDA_ERROR
-#endif
-    )
+    if (script_ok && plugin_ok && tls_lock_username(multi, up->username))
     {
         ks->authenticated = KS_AUTH_TRUE;
         if (plugin_status == OPENVPN_PLUGIN_FUNC_DEFERRED
@@ -1749,7 +1752,7 @@ verify_user_pass(struct user_pass *up, struct tls_multi *multi, struct tls_sessi
             ks->authenticated = KS_AUTH_DEFERRED;
         }
 #ifdef ENABLE_MANAGEMENT
-        if (man_def_auth != KMDA_UNDEF)
+        if (man_def_auth)
         {
             if (skip_auth)
             {
@@ -1777,7 +1780,7 @@ verify_user_pass(struct user_pass *up, struct tls_multi *multi, struct tls_sessi
             if (!multi->auth_token && (ks->auth_token_state_flags & AUTH_TOKEN_HMAC_OK)
                 && !(ks->auth_token_state_flags & AUTH_TOKEN_EXPIRED))
             {
-                multi->auth_token = strdup(up->password);
+                multi->auth_token = string_alloc(up->password, NULL);
             }
 
             /*

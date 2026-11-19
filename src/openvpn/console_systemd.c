@@ -54,7 +54,7 @@ check_systemd_running(void)
 }
 
 static bool
-get_console_input_systemd(const char *prompt, const bool echo, char *input, const int capacity)
+get_console_input_systemd(const char *prompt, const bool echo, char *input, const size_t capacity)
 {
     int std_out;
     bool ret = false;
@@ -69,19 +69,19 @@ get_console_input_systemd(const char *prompt, const bool echo, char *input, cons
     argv_printf_cat(&argv, "--timeout=0");
     argv_printf_cat(&argv, "%s", prompt);
 
-    if ((std_out = openvpn_popen(&argv, NULL)) < 0)
+    std_out = openvpn_popen(&argv, NULL);
+    argv_free(&argv);
+    if (std_out < 0)
     {
         return false;
     }
     memset(input, 0, capacity);
-    if (read(std_out, input, capacity - 1) != 0)
+    if (read(std_out, input, capacity - 1) > 0)
     {
         chomp(input);
         ret = true;
     }
     close(std_out);
-
-    argv_free(&argv);
 
     return ret;
 }

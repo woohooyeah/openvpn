@@ -304,6 +304,9 @@ COMMAND -- password and username
     username "Auth" foo
     password "Auth" bar
 
+  The same format is used for HTTP and SOCKS proxy username and password
+  with 'Auth' replaced by 'HTTP Proxy' and 'SOCKS Proxy' respectively.
+
   Example 3:
 
     >PASSWORD:Need 'Auth' username
@@ -393,6 +396,31 @@ COMMAND -- password and username
   should be obtained and included in the management interface client's
   response along with the username and password formatted as described
   in the Challenge/Response Protocol section below
+
+  Example 10:
+
+    >PASSWORD:Need '<UP_TYPE>' username/password UN:<user-base64>
+    >PASSWORD:Need 'Auth' username/password UN:<user-base64> SC:1,Please enter token PIN
+
+  where <UP_TYPE> is any supported type that requires username and password.
+  (see Example 2).
+
+  These work exactly as Examples 2 and 8, respectively, with the following
+  difference. The prompt has an additional word "UN:<user-base64>" where
+  <user-base64> is the base64 encoded form of a pre-defined username. This
+  may be a username inlined in the config file or read from an external
+  user-pass file.
+
+  The management client is expected to show the base64 decoded value to
+  the user. Whether the user can change this username or not is left to
+  the client implementation.
+
+  The response from the management client should follow the same format
+  as in example 2 or example 8, as applicable.
+
+  This prompt is shown only if the management-client announces a
+  version >= 6. Older clients will see the prompt shown in Example 2
+  or 8.
 
 See the "Challenge/Response Protocol" section below for more details
 about examples 8 and 9, including how the management interface client
@@ -530,6 +558,7 @@ Minimum client version required for certain features is listed below:
     >PK_SIGN:[base64],[alg]     -- version 3 or greater
     >PASSWORD:Need 'Auth' username -- version 4 or greater
     multiline password from client -- version 5 or greater
+    preferred username in >PASSWORD prompt -- version 6 or greater
 
 COMMAND -- auth-retry
 ---------------------
@@ -823,6 +852,59 @@ to inform the user that there is a delay in the connection attempt.
 Since the notify pending auth is not requiring any action on the client side
 that is required to continue the connection (unlike MFA or opening a browser)
 this message is not negotiated but can just be sent as a gratuitous message.
+
+app custom control
+==================
+If the special string "ACC" is passed as {EXTRA} OpenVPN will determine
+the common app custom protocols between the client and the server and instruct
+the client that the server will send control messages to the client using
+the ACC protocol.
+
+The server should then use client-acc-msg command to send app custom
+control messages to the client to facilitate the pending authentication.
+
+COMMAND -- client-acc-msg (OpenVPN 2.8 or higher)
+-------------------------------------------------
+
+On an OpenVPN instance running in server mode this command sends an
+app custom control message to a client. The format of the command is:
+
+  client-acc-msg {CID} {KID}
+  {protocol}
+  {flags}
+  {message}
+  END
+
+CID,KID -- client ID and Key ID. See documentation for ">CLIENT:"
+notification for more info.
+
+protocol -- the ACC protocol identifier that this message should be
+            tagged with.
+
+flags    -- a concatenation of letters for the encoding ('A' or '6')
+            and the lette 'F' if the message is a fragment. E.g.
+            "6F" for a base64 encoded message that is also a fragment
+            and not complete yet.
+
+message  -- The message encoded in the encoding specified in flags
+
+
+COMMAND -- acc-msg (OpenVPN 2.8 or higher)
+------------------------------------------
+
+When OpenVPN is running in --client mode this command sends an app
+custom command to the server. The format of the command is
+
+  acc-msg
+  {protocol}
+  {flags}
+  {message}
+  END
+
+See the client-acc-msg command for more details about the format of the
+message. Since a client has only one peer there is no need to specify the
+client id and key id.
+
 
 COMMAND -- client-deny  (OpenVPN 2.1 or higher)
 -----------------------------------------------
@@ -1298,6 +1380,58 @@ CLIENT notification types:
    response. Mechanisms that need multiple rounds or more complex answers
    should implement a different response type than CR_RESPONSE.
 
+(6) App custom control message
+
+    This message is an application specific payload message that is transported
+    over the OpenVPN control channel.
+
+    In server mode:
+
+    >CLIENT:ACC,{CID},{KID},{protocol},{fragment},{msg_base64}
+
+    In client mode:
+
+    >ACC:{protocol},{fragment},{msg_base64}
+
+    The protocol is a short ascii string identifying the app specific custom
+    protocol. If fragment is set to 1, the message is not complete and the
+    next message should be concatenated to this message to form a complete
+    message.
+
+    Note that fragment is basically a flag for allowing peers communicating
+    over ACC to indicate if multiple ACC messages should be considered to
+    be a single message. If the ACC protocol is a stream based protocol
+    then all messages can be sent without fragment flag.
+
+    Note that the OpenVPN implementation allows receiving messages longer than
+    announced maximum allowed message length. Implementations must be prepared
+    to handle messages that are longer than the maximum allowed message length.
+    Overlong messages are considered invalid and indicate that the peer is
+    misbehaving. Disconnecting/dropping the peer is considered a valid
+    response to such messages.
+
+    OpenVPN does not verify that the message is valid base64. A peer that
+    sends invalid base64 payload will be passed to the management interface.
+    An implementation should be prepared to handle invalid base64 and
+    handle accordingly (e.g. disconnect the client via client-deny or
+    ignore such messages).
+
+(7) App custom control protocol message
+
+   This message informs the client about the common ACC
+   protocols and the maximum message length for an ACC message.
+
+   In client mode:
+
+   >ACC_PROTOCOLS:protocols={protocol_list},message_len={max_msg_len}
+
+   protocol_list is the list of supported protocols by both server and client.
+   For example flower:power:sys_info would indicate these three protocols
+   are supported. max_msg_len specifies the maximum message length that the
+   peer supports.
+
+   In server mode these information are available in the acc_protocols and
+   acc_message_len variables of the client environment.
 
 Variables:
 
@@ -1454,6 +1588,12 @@ When credentials are needed and the --static-challenge option is
 used, the management interface will send:
 
   >PASSWORD:Need 'Auth' username/password SC:<flag>,<TEXT>
+  or
+  >PASSWORD:Need 'Auth' username/password UN:<user64> SC:<flag>,<TEXT>
+
+  The second form is used only if the client version is >=6, and a
+  preferred username is available. See also Example 10 in the section
+  titled "COMMAND -- password and username"
 
   flag: an integer whose least significant bit is the ECHO flag and
         the next significant bit is the FORMAT flag.
@@ -1463,6 +1603,7 @@ used, the management interface will send:
         as described below. Thus flag could take values 0, 1, 2, or 3.
   TEXT: challenge text that should be shown to the user to
       facilitate their response
+  user64: Preferred username, if available, base64 encoded.
 
 For example:
 

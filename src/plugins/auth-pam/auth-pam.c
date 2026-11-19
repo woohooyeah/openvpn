@@ -32,6 +32,7 @@
 #include <security/pam_appl.h>
 
 #ifdef USE_PAM_DLOPEN
+#include <dlfcn.h>
 #include "pamdl.h"
 #endif
 
@@ -184,6 +185,11 @@ recv_string(int fd, char *buffer, size_t len)
     return -1;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static ssize_t
 send_string(int fd, const char *string)
 {
@@ -198,6 +204,10 @@ send_string(int fd, const char *string)
         return -1;
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #ifdef DO_DAEMONIZE
 
@@ -779,6 +789,14 @@ my_conv(int num_msg, const struct pam_message **msg_array, struct pam_response *
     }
     else
     {
+        for (int i = 0; i < num_msg; ++i)
+        {
+            if (aresp[i].resp)
+            {
+                plugin_secure_memzero(aresp[i].resp, strlen(aresp[i].resp));
+                free(aresp[i].resp);
+            }
+        }
         free(aresp);
     }
 

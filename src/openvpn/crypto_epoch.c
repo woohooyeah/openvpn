@@ -46,26 +46,23 @@ ovpn_hkdf_expand(const uint8_t *secret, const uint8_t *info, size_t info_len,
     hmac_ctx_init(hmac_ctx, secret, "SHA256");
 
     ASSERT(info_len <= INT_MAX);
-    const unsigned int digest_size = SHA256_DIGEST_LENGTH;
 
     /* T(0) = empty string */
     uint8_t t_prev[SHA256_DIGEST_LENGTH];
-    unsigned int t_prev_len = 0;
 
-    for (uint8_t block = 1; (block - 1) * digest_size < out_len; block++)
+    for (uint8_t block = 1; (block - 1u) * SHA256_DIGEST_LENGTH < out_len; block++)
     {
         hmac_ctx_reset(hmac_ctx);
 
         /* calculate T(block) */
-        hmac_ctx_update(hmac_ctx, t_prev, t_prev_len);
+        hmac_ctx_update(hmac_ctx, t_prev, block == 1 ? 0 : SHA256_DIGEST_LENGTH);
         hmac_ctx_update(hmac_ctx, info, (int)info_len);
         hmac_ctx_update(hmac_ctx, &block, 1);
         hmac_ctx_final(hmac_ctx, t_prev);
-        t_prev_len = digest_size;
 
         /* Copy a full hmac output or remaining bytes */
-        size_t out_offset = (block - 1) * digest_size;
-        size_t copylen = min_size(digest_size, out_len - out_offset);
+        size_t out_offset = (block - 1u) * SHA256_DIGEST_LENGTH;
+        size_t copylen = min_size(SHA256_DIGEST_LENGTH, out_len - out_offset);
 
         memcpy(out + out_offset, t_prev, copylen);
     }
@@ -93,7 +90,7 @@ ovpn_expand_label(const uint8_t *secret, size_t secret_len, const uint8_t *label
     const uint8_t *label_prefix = (const uint8_t *)("ovpn ");
     uint8_t prefix_len = 5;
 
-    size_t hkdf_label_len = 2 + prefix_len + 1 + label_len + 1 + context_len;
+    size_t hkdf_label_len = 2u + prefix_len + 1u + label_len + 1u + context_len;
     struct buffer hkdf_label = alloc_buf_gc(hkdf_label_len, &gc);
 
     buf_write_u16(&hkdf_label, (uint16_t)out_len);
@@ -181,7 +178,7 @@ epoch_init_send_key_ctx(struct crypto_options *co)
 
     init_key_bi_ctx_send(&co->key_ctx_bi.encrypt, &send_key, &co->epoch_key_type, name);
     reset_packet_id_send(&co->packet_id.send);
-    CLEAR(send_key);
+    secure_memzero(&send_key, sizeof(send_key));
 }
 
 
@@ -196,7 +193,7 @@ epoch_init_recv_key(struct key_ctx *ctx, struct crypto_options *co)
     snprintf(name, sizeof(name), "Epoch Data key %" PRIu16, co->epoch_key_recv.epoch);
 
     init_key_bi_ctx_recv(ctx, &recv_key, &co->epoch_key_type, name);
-    CLEAR(recv_key);
+    secure_memzero(&recv_key, sizeof(recv_key));
 }
 
 void
@@ -346,8 +343,8 @@ free_epoch_key_ctx(struct crypto_options *co)
     free(co->epoch_data_keys_future);
     free_key_ctx(&co->epoch_retiring_data_receive_key);
     free(co->epoch_retiring_key_pid_recv.seq_list);
-    CLEAR(co->epoch_key_recv);
-    CLEAR(co->epoch_key_send);
+    secure_memzero(&co->epoch_key_recv, sizeof(co->epoch_key_recv));
+    secure_memzero(&co->epoch_key_send, sizeof(co->epoch_key_send));
 }
 
 void

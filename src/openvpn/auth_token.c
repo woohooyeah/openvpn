@@ -62,7 +62,7 @@ add_session_token_env(struct tls_session *session, struct tls_multi *multi,
         return;
     }
 
-    int auth_token_state_flags = session->key[KS_PRIMARY].auth_token_state_flags;
+    unsigned int auth_token_state_flags = session->key[KS_PRIMARY].auth_token_state_flags;
 
     const char *state;
 
@@ -172,6 +172,9 @@ auth_token_init_secret(struct key_ctx *key_ctx, const char *key_file, bool key_i
     key_parameters_from_key(&key_params, &key);
     init_key_ctx(key_ctx, &key_params, &kt, false, "auth-token secret");
 
+    secure_memzero(&key, sizeof(key));
+    secure_memzero(&key_params, sizeof(key_params));
+    buf_clear(&server_secret_key);
     free_buf(&server_secret_key);
 }
 
@@ -180,7 +183,7 @@ generate_auth_token(const struct user_pass *up, struct tls_multi *multi)
 {
     struct gc_arena gc = gc_new();
 
-    int64_t timestamp = htonll((uint64_t)now);
+    int64_t timestamp = (int64_t)htonll((uint64_t)now);
     int64_t initial_timestamp = timestamp;
 
     hmac_ctx_t *ctx = multi->opt.auth_token_key.hmac;
@@ -265,14 +268,14 @@ generate_auth_token(const struct user_pass *up, struct tls_multi *multi)
         alloc_buf_gc(strlen(SESSION_ID_PREFIX) + strlen(b64output) + 1, &gc);
 
     ASSERT(buf_write(&session_token, SESSION_ID_PREFIX, strlen(SESSION_ID_PREFIX)));
-    ASSERT(buf_write(&session_token, b64output, (int)strlen(b64output)));
+    ASSERT(buf_write(&session_token, b64output, strlen(b64output)));
     ASSERT(buf_write_u8(&session_token, 0));
 
     free(b64output);
 
     /* free the auth-token if defined, we will replace it with a new one */
     free(multi->auth_token);
-    multi->auth_token = strdup((char *)BPTR(&session_token));
+    multi->auth_token = string_alloc((char *)BPTR(&session_token), NULL);
 
     dmsg(D_SHOW_KEYS, "Generated token for client: %s (%s)", multi->auth_token, up->username);
 
@@ -282,12 +285,11 @@ generate_auth_token(const struct user_pass *up, struct tls_multi *multi)
          * Save the initial auth token to continue using the same session ID
          * and timestamp in updates
          */
-        multi->auth_token_initial = strdup(multi->auth_token);
+        multi->auth_token_initial = string_alloc(multi->auth_token, NULL);
     }
 
     gc_free(&gc);
 }
-
 
 static bool
 check_hmac_token(hmac_ctx_t *ctx, const uint8_t *b64decoded, const char *username)
@@ -362,7 +364,6 @@ verify_auth_token(struct user_pass *up, struct tls_multi *multi, struct tls_sess
 
     /* Accept session tokens only if their timestamp is in the acceptable range
      * for renegotiations.
-     * Cast is required for systems with 32bit time_t, e.g. Windows x86.
      */
     const time_t token_reneg_deadline = (time_t)timestamp + 2 * session->opt->auth_token_renewal;
     bool in_renegotiation_time = now >= (time_t)timestamp && now < token_reneg_deadline;

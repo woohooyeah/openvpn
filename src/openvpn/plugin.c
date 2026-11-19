@@ -303,7 +303,9 @@ plugin_init_item(struct plugin *p, const struct plugin_option *o)
             normalized_plugin_path);
     }
 
-    p->module = LoadLibraryW(normalized_plugin_path);
+    /* Resolve the plugin's dependencies from its own directory, not from PATH */
+    p->module = LoadLibraryExW(normalized_plugin_path, NULL,
+                               LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (!p->module)
     {
         msg(M_ERR, "PLUGIN_INIT: could not load plugin DLL: %ls", normalized_plugin_path);
@@ -461,6 +463,11 @@ static struct openvpn_plugin_callbacks callbacks = {
 #define _OPENVPN_PATCH_LEVEL "git:" CONFIGURE_GIT_REVISION CONFIGURE_GIT_FLAGS
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static void
 plugin_open_item(struct plugin *p, const struct plugin_option *o,
                  struct openvpn_plugin_string_list **retlist, const char **envp,
@@ -543,6 +550,10 @@ plugin_open_item(struct plugin *p, const struct plugin_option *o,
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 static int
 plugin_call_item(const struct plugin *p, void *per_client_context, const int type,
                  const struct argv *av, struct openvpn_plugin_string_list **retlist,
@@ -558,7 +569,6 @@ plugin_call_item(const struct plugin *p, void *per_client_context, const int typ
 
     if (p->plugin_handle && (p->plugin_type_mask & OPENVPN_PLUGIN_MASK(type)))
     {
-        struct gc_arena gc = gc_new();
         struct argv a = argv_insert_head(av, p->so_pathname);
 
         dmsg(D_PLUGIN_DEBUG, "PLUGIN_CALL: PRE type=%s", plugin_type_name(type));
@@ -607,7 +617,6 @@ plugin_call_item(const struct plugin *p, void *per_client_context, const int typ
         }
 
         argv_free(&a);
-        gc_free(&gc);
     }
     return status;
 }

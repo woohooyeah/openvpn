@@ -341,6 +341,11 @@ show_pull_filter_list(const struct pull_filter_list *l)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 void
 show_settings(const struct options *o)
 {
@@ -491,7 +496,6 @@ show_settings(const struct options *o)
     }
 #endif
 
-    SHOW_STR_INLINE(shared_secret_file);
     SHOW_PARM(key_direction, keydirection2ascii(o->key_direction, false, true), "%s");
     SHOW_STR(ciphername);
     SHOW_STR(ncp_ciphers);
@@ -502,7 +506,6 @@ show_settings(const struct options *o)
     SHOW_BOOL(mute_replay_warnings);
     SHOW_INT(replay_window);
     SHOW_INT(replay_time);
-    SHOW_STR(packet_id_file);
     SHOW_BOOL(test_crypto);
 
     SHOW_BOOL(tls_server);
@@ -629,5 +632,9 @@ show_settings(const struct options *o)
     show_tuntap_options(&o->tuntap_options);
 #endif
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* ifndef ENABLE_SMALL */

@@ -154,7 +154,7 @@ extract_x509_extension(X509 *cert, char *fieldname, char *out, size_t size)
                     {
                         continue;
                     }
-                    if ((ssize_t)strlen(buf) != ASN1_STRING_length(name->d.rfc822Name))
+                    if (strlen(buf) != ASN1_STRING_get_length(name->d.rfc822Name))
                     {
                         msg(D_TLS_ERRORS, "ASN1 ERROR: string contained terminating zero");
                     }
@@ -317,17 +317,21 @@ backend_x509_get_serial(openvpn_x509_cert_t *cert, struct gc_arena *gc)
     return serial;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 char *
 backend_x509_get_serial_hex(openvpn_x509_cert_t *cert, struct gc_arena *gc)
 {
     const ASN1_INTEGER *asn1_i = X509_get_serialNumber(cert);
     BIGNUM *bn_serial = ASN1_INTEGER_to_BN(asn1_i, NULL);
     int len_serial = BN_num_bytes(bn_serial);
-    unsigned char *buf = malloc(len_serial);
+    unsigned char *buf = gc_malloc(len_serial, false, gc);
     BN_bn2binpad(bn_serial, buf, len_serial);
 
     char *ret = format_hex_ex(buf, len_serial, 0, 1, ":", gc);
-    free(buf);
     BN_free(bn_serial);
 
     return ret;
@@ -572,6 +576,10 @@ x509_setenv_track(const struct x509_track *xt, struct env_set *es, const int dep
     }
     gc_free(&gc);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * Save X509 fields to environment, using the naming convention:

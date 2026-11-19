@@ -33,12 +33,18 @@
 #include "reliable.h"
 #include "siphash.h"
 #include "tls_crypt.h"
+#include "control_msg.h"
 
 /*
  * Dependent on hmac size, opcode size, and session_id size.
  * Will assert if too small.
  */
 #define SWAP_BUF_SIZE 256
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 /**
  * Move a packet authentication HMAC + related fields to or from the front
@@ -432,9 +438,8 @@ tls_reset_standalone(struct tls_wrap_ctx *ctx, const struct tls_auth_standalone 
     /* Add indication for tls-crypt-v2 to resend the WKc with the reply */
     if (request_resend_wkc)
     {
-        buf_write_u16(&buf, TLV_TYPE_EARLY_NEG_FLAGS); /* TYPE: flags */
-        buf_write_u16(&buf, sizeof(uint16_t));
-        buf_write_u16(&buf, EARLY_NEG_FLAG_RESEND_WKC);
+        ASSERT(ctrl_msg_tlv_write_u16(&buf, TLV_TYPE_EARLY_NEG_FLAGS, false,
+                                      EARLY_NEG_FLAG_RESEND_WKC));
     }
 
     /* Add tls-auth/tls-crypt wrapping, this might replace buf with
@@ -591,3 +596,7 @@ extract_command_buffer(struct buffer *buf, struct gc_arena *gc)
     buf_advance(buf, cmdlen);
     return cmdbuf;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

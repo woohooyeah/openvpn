@@ -56,6 +56,7 @@
 #include "schedule.h"
 #include "options_string.h"
 #include "resolve.h"
+#include "acc.h"
 
 #include "memdbg.h"
 
@@ -66,7 +67,6 @@ static const char *saved_pid_file_name; /* GLOBAL */
 /*
  * Crypto initialization flags
  */
-#define CF_LOAD_PERSISTED_PACKET_ID (1 << 0)
 #define CF_INIT_TLS_MULTI           (1 << 1)
 #define CF_INIT_TLS_AUTH_STANDALONE (1 << 2)
 
@@ -102,6 +102,11 @@ context_clear_all_except_first_time(struct context *c)
     c->persist = cpsave;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /*
  * Pass tunnel endpoint and MTU parms to a user-supplied script.
  * Used to execute the up/down script/plugins.
@@ -116,8 +121,6 @@ run_up_down(const char *command, const struct plugin_list *plugins, int plugin_t
             const char *ifconfig_remote, const char *context, const char *signal_text,
             const char *script_type, struct env_set *es)
 {
-    struct gc_arena gc = gc_new();
-
     if (signal_text)
     {
         setenv_str(es, "signal", signal_text);
@@ -173,8 +176,6 @@ run_up_down(const char *command, const struct plugin_list *plugins, int plugin_t
         openvpn_run_script(&argv, es, S_FATAL, "--up/--down");
         argv_free(&argv);
     }
-
-    gc_free(&gc);
 }
 
 /*
@@ -299,7 +300,11 @@ static bool
 management_callback_send_cc_message(void *arg, const char *command, const char *parameters)
 {
     struct context *c = (struct context *)arg;
-    size_t len = strlen(command) + 1 + strlen(parameters) + 1;
+    size_t len = strlen(command) + 1;
+    if (parameters)
+    {
+        len += 1 + strlen(parameters);
+    }
     if (len > PUSH_BUNDLE_SIZE)
     {
         return false;
@@ -737,8 +742,6 @@ context_init_1(struct context *c)
 {
     context_clear_1(c);
 
-    packet_id_persist_init(&c->c1.pid_persist);
-
     init_connection_list(c);
 
     c->c1.link_sockets_num = c->options.ce.local_list->len;
@@ -996,35 +999,10 @@ do_genkey(const struct options *options)
         platform_mlockall(true);
     }
 
-    /*
-     * We do not want user to use --genkey with --secret. In the transistion
-     * phase we for secret.
-     */
-    if (options->genkey && options->genkey_type != GENKEY_SECRET && options->shared_secret_file)
-    {
-        msg(M_USAGE, "Using --genkey type with --secret filename is "
-                     "not supported.  Use --genkey type filename instead.");
-    }
     if (options->genkey && options->genkey_type == GENKEY_SECRET)
     {
         int nbits_written;
         const char *genkey_filename = options->genkey_filename;
-        if (options->shared_secret_file && options->genkey_filename)
-        {
-            msg(M_USAGE, "You must provide a filename to either --genkey "
-                         "or --secret, not both");
-        }
-
-        /*
-         * Copy filename from shared_secret_file to genkey_filename to support
-         * the old --genkey --secret foo.file syntax.
-         */
-        if (options->shared_secret_file)
-        {
-            msg(M_WARN, "WARNING: Using --genkey --secret filename is "
-                        "DEPRECATED.  Use --genkey secret filename instead.");
-            genkey_filename = options->shared_secret_file;
-        }
 
         nbits_written = write_key_file(2, genkey_filename);
         if (nbits_written < 0)
@@ -1033,7 +1011,7 @@ do_genkey(const struct options *options)
         }
 
         msg(D_GENKEY | M_NOPREFIX, "Randomly generated %d bit key written to %s", nbits_written,
-            options->shared_secret_file);
+            genkey_filename ? genkey_filename : "stdout");
         return true;
     }
     else if (options->genkey && options->genkey_type == GENKEY_TLS_CRYPTV2_SERVER)
@@ -1079,7 +1057,7 @@ do_persist_tuntap(struct options *options, openvpn_net_ctx_t *ctx)
     /* sanity check on options for --mktun or --rmtun */
     notnull(options->dev, "TUN/TAP device (--dev)");
     if (options->ce.remote || options->ifconfig_local || options->ifconfig_remote_netmask
-        || options->shared_secret_file || options->tls_server || options->tls_client)
+        || options->tls_server || options->tls_client)
     {
         msg(M_FATAL | M_OPTERR,
             "options --mktun or --rmtun should only be used together with --dev");
@@ -1369,12 +1347,6 @@ do_init_timers(struct context *c, bool deferred)
         {
             event_timeout_init(&c->c2.occ_mtu_load_test_interval, OCC_MTU_LOAD_INTERVAL_SECONDS,
                                now);
-        }
-
-        /* initialize packet_id persistence timer */
-        if (c->options.packet_id_file)
-        {
-            event_timeout_init(&c->c2.packet_id_persist_interval, 60, now);
         }
 
         /* initialize tmp_int optimization that limits the number of times we call
@@ -1829,7 +1801,7 @@ open_tun_backend(struct context *c)
 
 
 static bool
-do_open_tun(struct context *c, int *error_flags)
+do_open_tun(struct context *c, unsigned int *error_flags)
 {
     struct gc_arena gc = gc_new();
     bool ret = false;
@@ -1844,6 +1816,7 @@ do_open_tun(struct context *c, int *error_flags)
         if (c->c1.tuntap)
         {
             oldtunfd = c->c1.tuntap->fd;
+            free(c->c1.tuntap->actual_name);
             free(c->c1.tuntap);
             c->c1.tuntap = NULL;
             c->c1.tuntap_owned = false;
@@ -2279,6 +2252,13 @@ tls_print_deferred_options_results(struct context *c)
         }
     }
 
+    struct tls_multi *multi = c->c2.tls_multi;
+    if (multi && multi->acc_negotiated_protocols)
+    {
+        buf_printf(&out, " custom-control %d A:6 %s",
+                   multi->acc_max_message_length, multi->acc_negotiated_protocols);
+    }
+
     if (BLENZ(&out) > strlen(header))
     {
         msg(D_HANDSHAKE, "%s", BSTR(&out));
@@ -2324,7 +2304,7 @@ do_deferred_options_part2(struct context *c)
 bool
 do_up(struct context *c, bool pulled_options, uint64_t option_types_found)
 {
-    int error_flags = 0;
+    unsigned int error_flags = 0;
     if (!c->c2.do_up_ran)
     {
         reset_coarse_timers(c);
@@ -2483,7 +2463,7 @@ do_update(struct context *c, uint64_t option_types_found)
     do_close_tun(c, true);
 
     management_sleep(1);
-    int error_flags = 0;
+    unsigned int error_flags = 0;
     c->c2.did_open_tun = do_open_tun(c, &error_flags);
     update_time();
 
@@ -2520,6 +2500,11 @@ pull_permission_mask(const struct context *c)
     if (!c->options.route_nopull)
     {
         flags |= (OPT_P_ROUTE | OPT_P_DHCPDNS);
+    }
+
+    if (c->options.acc_protocols)
+    {
+        flags |= OPT_P_ACC;
     }
 
     return flags;
@@ -2728,6 +2713,18 @@ do_deferred_options(struct context *c, const uint64_t found, const bool is_updat
                 c->options.ce.tun_mtu);
         }
         frame->tun_mtu = min_int(frame->tun_max_mtu, c->options.ce.tun_mtu);
+    }
+
+    if (found & OPT_P_ACC && c->options.pushed_acc_negotiated_protocols)
+    {
+        struct tls_multi *multi = c->c2.tls_multi;
+        free(multi->acc_negotiated_protocols);
+        multi->acc_negotiated_protocols = string_alloc(c->options.pushed_acc_negotiated_protocols, NULL);
+        multi->acc_max_message_length = c->options.pushed_acc_max_message_length;
+
+        msg(D_PUSH, "OPTIONS IMPORT: ACC protocols: %s, msg len: %d",
+            multi->acc_negotiated_protocols, multi->acc_max_message_length);
+        notify_client_acc_protocols(multi);
     }
 
     return true;
@@ -2976,31 +2973,15 @@ key_schedule_free(struct key_schedule *ks, bool free_ssl_ctx)
 }
 
 static void
-init_crypto_pre(struct context *c, const unsigned int flags)
-{
-    if (c->options.engine)
-    {
-        crypto_init_lib_engine(c->options.engine);
-    }
-
-    if (flags & CF_LOAD_PERSISTED_PACKET_ID)
-    {
-        /* load a persisted packet-id for cross-session replay-protection */
-        if (c->options.packet_id_file)
-        {
-            packet_id_persist_load(&c->c1.pid_persist, c->options.packet_id_file);
-        }
-    }
-}
-
-
-static void
 do_init_crypto_test(struct context *c)
 {
     const struct options *options = &c->options;
     ASSERT(options->test_crypto);
 
-    init_crypto_pre(c, 0);
+    if (c->options.engine)
+    {
+        crypto_init_lib_engine(c->options.engine);
+    }
 
     c->c2.crypto_options.flags |= CO_PACKET_ID_LONG_FORM;
 
@@ -3011,55 +2992,10 @@ do_init_crypto_test(struct context *c)
     ASSERT(!key_ctx_bi_defined(&c->c1.ks.static_key));
 
     /* Init cipher and hash algorithm */
-    init_key_type(&c->c1.ks.key_type, options->ciphername, options->authname,
-                  options->test_crypto, true);
+    init_key_type(&c->c1.ks.key_type, options->ciphername, options->authname, true);
 
     generate_test_crypto_random_key(&c->c1.ks.key_type, &c->c1.ks.static_key,
                                     "test crypto key");
-
-    /* Get key schedule */
-    c->c2.crypto_options.key_ctx_bi = c->c1.ks.static_key;
-}
-
-/*
- * Static Key Mode (using a pre-shared key)
- */
-static void
-do_init_crypto_static(struct context *c, const unsigned int flags)
-{
-    const struct options *options = &c->options;
-    ASSERT(options->shared_secret_file);
-
-    init_crypto_pre(c, flags);
-
-    /* Initialize flags */
-    if (c->options.mute_replay_warnings)
-    {
-        c->c2.crypto_options.flags |= CO_MUTE_REPLAY_WARNINGS;
-    }
-
-    /* Initialize packet ID tracking */
-    packet_id_init(&c->c2.crypto_options.packet_id, options->replay_window, options->replay_time,
-                   "STATIC", 0);
-    c->c2.crypto_options.pid_persist = &c->c1.pid_persist;
-    c->c2.crypto_options.flags |= CO_PACKET_ID_LONG_FORM;
-    packet_id_persist_load_obj(&c->c1.pid_persist, &c->c2.crypto_options.packet_id);
-
-    if (!key_ctx_bi_defined(&c->c1.ks.static_key))
-    {
-        /* Get cipher & hash algorithms */
-        init_key_type(&c->c1.ks.key_type, options->ciphername, options->authname,
-                      options->test_crypto, true);
-
-        /* Read cipher and hmac keys from shared secret file */
-        crypto_read_openvpn_key(&c->c1.ks.key_type, &c->c1.ks.static_key,
-                                options->shared_secret_file, options->shared_secret_file_inline,
-                                options->key_direction, "Static Key Encryption", "secret", NULL);
-    }
-    else
-    {
-        msg(M_INFO, "Re-using pre-shared static key");
-    }
 
     /* Get key schedule */
     c->c2.crypto_options.key_ctx_bi = c->c1.ks.static_key;
@@ -3204,7 +3140,7 @@ do_init_crypto_tls_c1(struct context *c)
 
         /* Do not warn if the cipher is used only in OCC */
         bool warn = options->enable_ncp_fallback;
-        init_key_type(&c->c1.ks.key_type, ciphername, options->authname, true, warn);
+        init_key_type(&c->c1.ks.key_type, ciphername, options->authname, warn);
 
         /* initialize tls-auth/crypt/crypt-v2 key */
         do_init_tls_wrap_key(c);
@@ -3246,7 +3182,10 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     ASSERT(options->tls_server || options->tls_client);
     ASSERT(!options->test_crypto);
 
-    init_crypto_pre(c, flags);
+    if (c->options.engine)
+    {
+        crypto_init_lib_engine(c->options.engine);
+    }
 
     /* Make sure we are either a TLS client or server but not both */
     ASSERT(options->tls_server == !options->tls_client);
@@ -3352,6 +3291,7 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     to.verify_hash_depth = options->verify_hash_depth;
     to.verify_hash_no_ca = options->verify_hash_no_ca;
     memcpy(to.x509_username_field, options->x509_username_field, sizeof(to.x509_username_field));
+    to.acc_protocols = options->acc_protocols;
     to.es = c->c2.es;
     to.net_ctx = &c->net_ctx;
 
@@ -3424,7 +3364,6 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     if (to.tls_wrap.mode == TLS_WRAP_AUTH || to.tls_wrap.mode == TLS_WRAP_CRYPT)
     {
         to.tls_wrap.opt.key_ctx_bi = c->c1.ks.tls_wrap_key;
-        to.tls_wrap.opt.pid_persist = &c->c1.pid_persist;
         to.tls_wrap.opt.flags |= CO_PACKET_ID_LONG_FORM;
         to.tls_wrap.original_wrap_keydata = c->c1.ks.original_wrap_keydata;
     }
@@ -3489,41 +3428,6 @@ do_init_frame_tls(struct context *c)
         frame_print(&c->c2.tls_auth_standalone->frame, D_MTU_INFO, "TLS-Auth MTU parms");
         c->c2.tls_auth_standalone->tls_wrap.work = alloc_buf_gc(BUF_SIZE(&c->c2.frame), &c->c2.gc);
         c->c2.tls_auth_standalone->workbuf = alloc_buf_gc(BUF_SIZE(&c->c2.frame), &c->c2.gc);
-    }
-}
-
-/*
- * No encryption or authentication.
- */
-static void
-do_init_crypto_none(struct context *c)
-{
-    ASSERT(!c->options.test_crypto);
-
-    /* Initialise key_type with auth/cipher "none", so the key_type struct is
-     * valid */
-    init_key_type(&c->c1.ks.key_type, "none", "none", c->options.test_crypto, true);
-
-    msg(M_WARN, "******* WARNING *******: All encryption and authentication features "
-                "disabled -- All data will be tunnelled as clear text and will not be "
-                "protected against man-in-the-middle changes. "
-                "PLEASE DO RECONSIDER THIS CONFIGURATION!");
-}
-
-static void
-do_init_crypto(struct context *c, const unsigned int flags)
-{
-    if (c->options.shared_secret_file)
-    {
-        do_init_crypto_static(c, flags);
-    }
-    else if (c->options.tls_server || c->options.tls_client)
-    {
-        do_init_crypto_tls(c, flags);
-    }
-    else /* no encryption or authentication. */
-    {
-        do_init_crypto_none(c);
     }
 }
 
@@ -3765,6 +3669,10 @@ do_link_socket_new(struct context *c)
     }
     c->c2.link_socket_owned = true;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * bind TCP/UDP sockets
@@ -4018,11 +3926,6 @@ static void
 do_close_packet_id(struct context *c)
 {
     packet_id_free(&c->c2.crypto_options.packet_id);
-    packet_id_persist_save(&c->c1.pid_persist);
-    if (!(c->sig->signal_received == SIGUSR1))
-    {
-        packet_id_persist_close(&c->c1.pid_persist);
-    }
 }
 
 #ifdef ENABLE_FRAGMENT
@@ -4306,6 +4209,24 @@ management_callback_network_change(void *arg, bool samenetwork)
 }
 #endif /* ifdef TARGET_ANDROID */
 
+static bool
+management_acc_msg(void *arg,
+                   struct buffer_list *input) /* ownership transferred */
+{
+    struct context *c = arg;
+
+    bool ret = false;
+    if (buffer_list_defined(input) && c->c2.tls_multi)
+    {
+        struct tls_multi *multi = c->c2.tls_multi;
+        struct tls_session *session = &multi->session[TM_ACTIVE];
+
+        ret = management_send_acc_message(c, multi, session, input);
+    }
+
+    buffer_list_free(input);
+    return ret;
+}
 #endif /* ifdef ENABLE_MANAGEMENT */
 
 void
@@ -4322,6 +4243,7 @@ init_management_callback_p2p(struct context *c)
         cb.proxy_cmd = management_callback_proxy_cmd;
         cb.remote_cmd = management_callback_remote_cmd;
         cb.send_cc_message = management_callback_send_cc_message;
+        cb.acc_msg = management_acc_msg;
 #ifdef TARGET_ANDROID
         cb.network_change = management_callback_network_change;
 #endif
@@ -4558,13 +4480,13 @@ init_instance(struct context *c, const struct env_set *env, const unsigned int f
         }
         else if (c->mode == CM_P2P)
         {
-            crypto_flags = CF_LOAD_PERSISTED_PACKET_ID | CF_INIT_TLS_MULTI;
+            crypto_flags = CF_INIT_TLS_MULTI;
         }
         else if (child)
         {
             crypto_flags = CF_INIT_TLS_MULTI;
         }
-        do_init_crypto(c, crypto_flags);
+        do_init_crypto_tls(c, crypto_flags);
         if (IS_SIG(c) && !child)
         {
             goto sig;
@@ -4609,7 +4531,7 @@ init_instance(struct context *c, const struct env_set *env, const unsigned int f
      * open tun/tap device, ifconfig, run up script, etc. */
     if (!(options->up_delay || PULL_DEFINED(options)) && (c->mode == CM_P2P || c->mode == CM_TOP))
     {
-        int error_flags = 0;
+        unsigned int error_flags = 0;
         c->c2.did_open_tun = do_open_tun(c, &error_flags);
     }
 
@@ -4816,7 +4738,6 @@ inherit_context_child(struct context *dest, const struct context *src, struct li
     ALLOC_OBJ_CLEAR_GC(dest->sig, struct signal_info, &dest->gc);
 
     /* c1 init */
-    packet_id_persist_init(&dest->c1.pid_persist);
     dest->c1.link_sockets_num = 1;
     do_link_socket_addr_new(dest);
 
@@ -4826,9 +4747,6 @@ inherit_context_child(struct context *dest, const struct context *src, struct li
     dest->c1.ks.tls_wrap_key = src->c1.ks.tls_wrap_key;
     dest->c1.ks.tls_auth_key_type = src->c1.ks.tls_auth_key_type;
     dest->c1.ks.tls_crypt_v2_server_key = src->c1.ks.tls_crypt_v2_server_key;
-    /* inherit pre-NCP ciphers */
-    dest->options.ciphername = src->options.ciphername;
-    dest->options.authname = src->options.authname;
 
     /* inherit auth-token */
     dest->c1.ks.auth_token_key = src->c1.ks.auth_token_key;
@@ -4885,10 +4803,6 @@ inherit_context_child(struct context *dest, const struct context *src, struct li
     }
 
     init_instance(dest, src->c2.es, CC_NO_CLOSE | CC_USR1_TO_HUP);
-    if (IS_SIG(dest))
-    {
-        return;
-    }
 }
 
 void

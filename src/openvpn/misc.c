@@ -72,6 +72,11 @@ set_std_files_to_null(bool stdin_only)
 #endif
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 #ifdef ENABLE_MANAGEMENT
 /* Get username/password from the management interface */
 static bool
@@ -250,6 +255,10 @@ get_user_pass_cr(struct user_pass *up, const char *auth_file, const char *prefix
                 if (!(flags & GET_USER_PASS_PASSWORD_ONLY))
                 {
                     buf_parse(&buf, '\n', up->username, USER_PASS_LEN);
+                    /* The password starts on the next line, even if the username was truncated. */
+                    const char *password = strchr(auth_file, '\n');
+                    password = password ? password + 1 : "";
+                    buf_set_read(&buf, (uint8_t *)password, strlen(password) + 1);
                 }
                 buf_parse(&buf, '\n', up->password, USER_PASS_LEN);
 
@@ -282,6 +291,14 @@ get_user_pass_cr(struct user_pass *up, const char *auth_file, const char *prefix
                     {
                         msg(M_FATAL, "Error reading username from %s authfile: %s", prefix,
                             auth_file);
+                    }
+                    if (!strchr(up->username, '\n'))
+                    {
+                        /* Consume the rest of the username line before reading the password. */
+                        int c;
+                        while ((c = fgetc(fp)) != '\n' && c != EOF)
+                        {
+                        }
                     }
                 }
                 chomp(up->username);
@@ -749,6 +766,10 @@ validate_peer_info_line(char *line)
     }
     return (state == 2);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 void
 output_peer_info_env(struct env_set *es, const char *peer_info)

@@ -58,6 +58,11 @@ dns_server_port_parse(in_port_t *port, const char *port_str)
     return true;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 bool
 dns_server_addr_parse(struct dns_server *server, const char *addr)
 {
@@ -143,6 +148,10 @@ dns_server_addr_parse(struct dns_server *server, const char *addr)
     freeaddrinfo(ai);
     return true;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 bool
 dns_domain_list_append(struct dns_domain **entry, char **domains, struct gc_arena *gc)
@@ -402,6 +411,11 @@ make_domain_list(const char *what, const struct dns_domain *src, bool nrpt_domai
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static void
 run_up_down_service(bool add, const struct options *o, const struct tuntap *tt)
 {
@@ -476,7 +490,11 @@ run_up_down_service(bool add, const struct options *o, const struct tuntap *tt)
     send_msg_iservice(o->msg_channel, &nrpt, sizeof(nrpt), &ack, "DNS");
 }
 
-#else  /* ifdef _WIN32 */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+#else /* ifdef _WIN32 */
 
 static void
 setenv_dns_option(struct env_set *es, const char *format, size_t i, size_t j, const char *value)
@@ -608,9 +626,16 @@ run_updown_runner(bool up, struct options *o, const struct tuntap *tt,
 {
     int dns_pipe_fd[2];
     int ack_pipe_fd[2];
-    if (pipe(dns_pipe_fd) != 0 || pipe(ack_pipe_fd) != 0)
+    if (pipe(dns_pipe_fd) != 0)
     {
         msg(M_WARN | M_ERRNO, "run_dns_up_down: unable to create pipes");
+        return false;
+    }
+    if (pipe(ack_pipe_fd) != 0)
+    {
+        msg(M_WARN | M_ERRNO, "run_dns_up_down: unable to create pipes");
+        close(dns_pipe_fd[0]);
+        close(dns_pipe_fd[1]);
         return false;
     }
     updown_runner->pid = fork();
@@ -695,6 +720,11 @@ run_updown_runner(bool up, struct options *o, const struct tuntap *tt,
     return true;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static void
 run_up_down_command(bool up, struct options *o, const struct tuntap *tt,
                     struct dns_updown_runner_info *updown_runner)
@@ -772,6 +802,10 @@ out_free:
 
     msg(M_INFO, "dns %s command exited with status %d", up ? "up" : "down", status);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* _WIN32 */
 

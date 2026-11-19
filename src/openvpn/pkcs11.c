@@ -54,6 +54,11 @@ __mygettimeofday(struct timeval *tv)
 }
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static void
 __mysleep(unsigned long usec)
 {
@@ -504,6 +509,13 @@ pkcs11_management_id_get(const int index, char **id, char **base64)
         goto cleanup;
     }
 
+    if (certificate_blob_size > PKCS11_MAX_CERT_SIZE)
+    {
+        msg(M_WARN, "PKCS#11: Certificate too large: %zu bytes, maximum is %zu",
+            certificate_blob_size, PKCS11_MAX_CERT_SIZE);
+        goto cleanup;
+    }
+
     if ((certificate_blob = (unsigned char *)malloc(certificate_blob_size)) == NULL)
     {
         msg(M_FATAL, "PKCS#11: Cannot allocate memory");
@@ -812,4 +824,9 @@ cleanup:
     pkcs11h_terminate();
     gc_free(&gc);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #endif /* ENABLE_PKCS11 */

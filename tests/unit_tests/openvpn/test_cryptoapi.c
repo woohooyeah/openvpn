@@ -196,7 +196,7 @@ import_certs(void **state)
             fail_msg("Failed to DER encode PKCS12: <%s>", c->friendly_name);
             return;
         }
-        blob.cbData = len;
+        blob.cbData = (DWORD)len;
 
         DWORD flags = PKCS12_ALLOW_OVERWRITE_KEY | PKCS12_ALWAYS_CNG_KSP;
         HCERTSTORE tmp_store = PFXImportCertStore(&blob, wpass, flags);

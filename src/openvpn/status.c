@@ -55,6 +55,11 @@ print_status_mode(unsigned int flags)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 struct status_output *
 status_open(const char *filename, const int refresh_freq, const int msglevel,
             const struct virtual_output *vout, const unsigned int flags)
@@ -118,6 +123,10 @@ status_open(const char *filename, const int refresh_freq, const int msglevel,
     }
     return so;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 bool
 status_trigger(struct status_output *so)
@@ -267,7 +276,7 @@ status_read(struct status_output *so, struct buffer *buf)
             if (c == -1)
             {
                 ASSERT(buf_init(&so->read_buf, 0));
-                ssize_t len = read(so->fd, BPTR(&so->read_buf), BCAP(&so->read_buf));
+                ssize_t len = read(so->fd, BPTR(&so->read_buf), (unsigned int)BCAP(&so->read_buf));
                 if (len <= 0)
                 {
                     break;

@@ -243,6 +243,11 @@ sitnl_bind(int fd, uint32_t groups, uint32_t *local_pid)
     return 0;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /**
  * Send Netlink message and run callback on reply (if specified)
  */
@@ -612,9 +617,11 @@ int
 net_route_v6_best_gw(openvpn_net_ctx_t *ctx, const struct in6_addr *dst, struct in6_addr *best_gw,
                      char *best_iface)
 {
-    inet_address_t dst_v6 = { 0 };
+    inet_address_t dst_v6;
     char buf[INET6_ADDRSTRLEN];
     int ret;
+
+    CLEAR(dst_v6);
 
     if (dst)
     {
@@ -640,9 +647,11 @@ int
 net_route_v4_best_gw(openvpn_net_ctx_t *ctx, const in_addr_t *dst, in_addr_t *best_gw,
                      char *best_iface)
 {
-    inet_address_t dst_v4 = { 0 };
+    inet_address_t dst_v4;
     char buf[INET_ADDRSTRLEN];
     int ret;
+
+    CLEAR(dst_v4);
 
     if (dst)
     {
@@ -668,25 +677,37 @@ net_route_v4_best_gw(openvpn_net_ctx_t *ctx, const in_addr_t *dst, in_addr_t *be
 
 #ifdef ENABLE_SITNL
 
-int
-net_iface_up(openvpn_net_ctx_t *ctx, const char *iface, bool up)
+static int
+get_ifindex(const char *func, const char *iface, uint32_t *ifindex)
 {
-    struct sitnl_link_req req;
-    int ifindex;
-
-    CLEAR(req);
-
     if (!iface)
     {
-        msg(M_WARN, "%s: passed NULL interface", __func__);
+        msg(M_WARN, "%s: passed NULL interface", func);
         return -EINVAL;
     }
 
-    ifindex = if_nametoindex(iface);
-    if (ifindex == 0)
+    *ifindex = if_nametoindex(iface);
+    if (*ifindex == 0)
     {
-        msg(M_WARN, "%s: rtnl: cannot get ifindex for %s: %s", __func__, iface, strerror(errno));
+        msg(M_WARN | M_ERRNO, "%s: rtnl: cannot get ifindex for %s", func, iface);
         return -ENOENT;
+    }
+    return 0;
+}
+
+
+int
+net_iface_up(const openvpn_net_ctx_t *ctx, const char *iface, bool up)
+{
+    struct sitnl_link_req req;
+    uint32_t ifindex;
+
+    CLEAR(req);
+
+    const int ret = get_ifindex(__func__, iface, &ifindex);
+    if (ret < 0)
+    {
+        return ret;
     }
 
     req.n.nlmsg_len = NLMSG_LENGTH(sizeof(req.i));
@@ -694,7 +715,7 @@ net_iface_up(openvpn_net_ctx_t *ctx, const char *iface, bool up)
     req.n.nlmsg_type = RTM_SETLINK;
 
     req.i.ifi_family = AF_PACKET;
-    req.i.ifi_index = ifindex;
+    req.i.ifi_index = (int)ifindex;
     req.i.ifi_change |= IFF_UP;
     if (up)
     {
@@ -702,7 +723,7 @@ net_iface_up(openvpn_net_ctx_t *ctx, const char *iface, bool up)
     }
     else
     {
-        req.i.ifi_flags &= ~IFF_UP;
+        req.i.ifi_flags &= ~(unsigned int)IFF_UP;
     }
 
     msg(M_INFO, "%s: set %s %s", __func__, iface, up ? "up" : "down");
@@ -711,17 +732,16 @@ net_iface_up(openvpn_net_ctx_t *ctx, const char *iface, bool up)
 }
 
 int
-net_iface_mtu_set(openvpn_net_ctx_t *ctx, const char *iface, uint32_t mtu)
+net_iface_mtu_set(const openvpn_net_ctx_t *ctx, const char *iface, uint32_t mtu)
 {
     struct sitnl_link_req req;
-    int ifindex, ret = -1;
+    int ret = -1;
+    uint32_t ifindex;
 
     CLEAR(req);
 
-    ifindex = if_nametoindex(iface);
-    if (ifindex == 0)
+    if (get_ifindex(__func__, iface, &ifindex) < 0)
     {
-        msg(M_WARN | M_ERRNO, "%s: rtnl: cannot get ifindex for %s", __func__, iface);
         return -1;
     }
 
@@ -730,7 +750,7 @@ net_iface_mtu_set(openvpn_net_ctx_t *ctx, const char *iface, uint32_t mtu)
     req.n.nlmsg_type = RTM_SETLINK;
 
     req.i.ifi_family = AF_PACKET;
-    req.i.ifi_index = ifindex;
+    req.i.ifi_index = (int)ifindex;
 
     SITNL_ADDATTR(&req.n, sizeof(req), IFLA_MTU, &mtu, 4);
 
@@ -742,17 +762,16 @@ err:
 }
 
 int
-net_addr_ll_set(openvpn_net_ctx_t *ctx, const openvpn_net_iface_t *iface, uint8_t *addr)
+net_addr_ll_set(const openvpn_net_ctx_t *ctx, const openvpn_net_iface_t *iface, uint8_t *addr)
 {
     struct sitnl_link_req req;
-    int ifindex, ret = -1;
+    int ret = -1;
+    uint32_t ifindex;
 
     CLEAR(req);
 
-    ifindex = if_nametoindex(iface);
-    if (ifindex == 0)
+    if (get_ifindex(__func__, iface, &ifindex) < 0)
     {
-        msg(M_WARN | M_ERRNO, "%s: rtnl: cannot get ifindex for %s", __func__, iface);
         return -1;
     }
 
@@ -761,7 +780,7 @@ net_addr_ll_set(openvpn_net_ctx_t *ctx, const openvpn_net_iface_t *iface, uint8_
     req.n.nlmsg_type = RTM_SETLINK;
 
     req.i.ifi_family = AF_PACKET;
-    req.i.ifi_index = ifindex;
+    req.i.ifi_index = (int)ifindex;
 
     SITNL_ADDATTR(&req.n, sizeof(req), IFLA_ADDRESS, addr, OPENVPN_ETH_ALEN);
 
@@ -773,22 +792,19 @@ err:
 }
 
 static int
-sitnl_addr_set(uint16_t cmd, uint16_t flags, int ifindex, sa_family_t af_family,
+sitnl_addr_set(uint16_t cmd, uint16_t flags, const char *iface, sa_family_t af_family,
                const inet_address_t *local, const inet_address_t *remote, int prefixlen)
 {
     struct sitnl_addr_req req;
-    uint32_t size;
-    int ret = -EINVAL;
+    size_t size;
+    uint32_t ifindex;
 
-    CLEAR(req);
-
-    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(req.i));
-    req.n.nlmsg_type = cmd;
-    req.n.nlmsg_flags = NLM_F_REQUEST | flags;
-
-    req.i.ifa_index = ifindex;
-    ASSERT(af_family <= UINT8_MAX);
-    req.i.ifa_family = (uint8_t)af_family;
+    int ret = get_ifindex(__func__, iface, &ifindex);
+    if (ret < 0)
+    {
+        return ret;
+    }
+    ret = -EINVAL; /* for SITNL_ADDATTR */
 
     switch (af_family)
     {
@@ -805,10 +821,20 @@ sitnl_addr_set(uint16_t cmd, uint16_t flags, int ifindex, sa_family_t af_family,
             return -EINVAL;
     }
 
+    CLEAR(req);
+
+    req.n.nlmsg_len = NLMSG_LENGTH(sizeof(req.i));
+    req.n.nlmsg_type = cmd;
+    req.n.nlmsg_flags = NLM_F_REQUEST | flags;
+
+    req.i.ifa_index = ifindex;
+    ASSERT(af_family <= UINT8_MAX);
+    req.i.ifa_family = (uint8_t)af_family;
+
     /* if no prefixlen has been specified, assume host address */
     if (prefixlen == 0)
     {
-        prefixlen = size * 8;
+        prefixlen = (int)size * 8;
     }
     ASSERT(prefixlen <= UINT8_MAX);
     req.i.ifa_prefixlen = (uint8_t)prefixlen;
@@ -843,75 +869,36 @@ static int
 sitnl_addr_ptp_add(sa_family_t af_family, const char *iface, const inet_address_t *local,
                    const inet_address_t *remote)
 {
-    int ifindex;
-
-    switch (af_family)
-    {
-        case AF_INET:
-        case AF_INET6:
-            break;
-
-        default:
-            return -EINVAL;
-    }
-
-    if (!iface)
-    {
-        msg(M_WARN, "%s: passed NULL interface", __func__);
-        return -EINVAL;
-    }
-
-    ifindex = if_nametoindex(iface);
-    if (ifindex == 0)
-    {
-        msg(M_WARN, "%s: cannot get ifindex for %s: %s", __func__, np(iface), strerror(errno));
-        return -ENOENT;
-    }
-
-    return sitnl_addr_set(RTM_NEWADDR, NLM_F_CREATE | NLM_F_REPLACE, ifindex, af_family, local,
+    return sitnl_addr_set(RTM_NEWADDR, NLM_F_CREATE | NLM_F_REPLACE, iface, af_family, local,
                           remote, 0);
 }
 
 static int
 sitnl_addr_ptp_del(sa_family_t af_family, const char *iface, const inet_address_t *local)
 {
-    int ifindex;
-
-    switch (af_family)
-    {
-        case AF_INET:
-        case AF_INET6:
-            break;
-
-        default:
-            return -EINVAL;
-    }
-
-    if (!iface)
-    {
-        msg(M_WARN, "%s: passed NULL interface", __func__);
-        return -EINVAL;
-    }
-
-    ifindex = if_nametoindex(iface);
-    if (ifindex == 0)
-    {
-        msg(M_WARN | M_ERRNO, "%s: cannot get ifindex for %s", __func__, iface);
-        return -ENOENT;
-    }
-
-    return sitnl_addr_set(RTM_DELADDR, 0, ifindex, af_family, local, NULL, 0);
+    return sitnl_addr_set(RTM_DELADDR, 0, iface, af_family, local, NULL, 0);
 }
 
 static int
-sitnl_route_set(uint16_t cmd, uint16_t flags, int ifindex, sa_family_t af_family, const void *dst,
+sitnl_route_set(uint16_t cmd, uint16_t flags, const char *iface, sa_family_t af_family, const void *dst,
                 int prefixlen, const void *gw, enum rt_class_t table, int metric,
                 enum rt_scope_t scope, unsigned char protocol, unsigned char type)
 {
     struct sitnl_route_req req;
-    int ret = -1, size;
+    int ret = -1; /* for SITNL_ADDATTR */
+    size_t size;
+    uint32_t ifindex = 0;
 
     CLEAR(req);
+
+    if (iface)
+    {
+        const int ifi_ret = get_ifindex(__func__, iface, &ifindex);
+        if (ifi_ret < 0)
+        {
+            return ifi_ret;
+        }
+    }
 
     switch (af_family)
     {
@@ -977,71 +964,23 @@ err:
 static int
 sitnl_addr_add(sa_family_t af_family, const char *iface, const inet_address_t *addr, int prefixlen)
 {
-    int ifindex;
-
-    switch (af_family)
-    {
-        case AF_INET:
-        case AF_INET6:
-            break;
-
-        default:
-            return -EINVAL;
-    }
-
-    if (!iface)
-    {
-        msg(M_WARN, "%s: passed NULL interface", __func__);
-        return -EINVAL;
-    }
-
-    ifindex = if_nametoindex(iface);
-    if (ifindex == 0)
-    {
-        msg(M_WARN | M_ERRNO, "%s: rtnl: cannot get ifindex for %s", __func__, iface);
-        return -ENOENT;
-    }
-
-    return sitnl_addr_set(RTM_NEWADDR, NLM_F_CREATE | NLM_F_REPLACE, ifindex, af_family, addr, NULL,
+    return sitnl_addr_set(RTM_NEWADDR, NLM_F_CREATE | NLM_F_REPLACE, iface, af_family, addr, NULL,
                           prefixlen);
 }
 
 static int
 sitnl_addr_del(sa_family_t af_family, const char *iface, const inet_address_t *addr, int prefixlen)
 {
-    int ifindex;
-
-    switch (af_family)
-    {
-        case AF_INET:
-        case AF_INET6:
-            break;
-
-        default:
-            return -EINVAL;
-    }
-
-    if (!iface)
-    {
-        msg(M_WARN, "%s: passed NULL interface", __func__);
-        return -EINVAL;
-    }
-
-    ifindex = if_nametoindex(iface);
-    if (ifindex == 0)
-    {
-        msg(M_WARN | M_ERRNO, "%s: rtnl: cannot get ifindex for %s", __func__, iface);
-        return -ENOENT;
-    }
-
-    return sitnl_addr_set(RTM_DELADDR, 0, ifindex, af_family, addr, NULL, prefixlen);
+    return sitnl_addr_set(RTM_DELADDR, 0, iface, af_family, addr, NULL, prefixlen);
 }
 
 int
-net_addr_v4_add(openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *addr, int prefixlen)
+net_addr_v4_add(const openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *addr, int prefixlen)
 {
-    inet_address_t addr_v4 = { 0 };
+    inet_address_t addr_v4;
     char buf[INET_ADDRSTRLEN];
+
+    CLEAR(addr_v4);
 
     if (!addr)
     {
@@ -1057,11 +996,13 @@ net_addr_v4_add(openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *addr
 }
 
 int
-net_addr_v6_add(openvpn_net_ctx_t *ctx, const char *iface, const struct in6_addr *addr,
+net_addr_v6_add(const openvpn_net_ctx_t *ctx, const char *iface, const struct in6_addr *addr,
                 int prefixlen)
 {
-    inet_address_t addr_v6 = { 0 };
+    inet_address_t addr_v6;
     char buf[INET6_ADDRSTRLEN];
+
+    CLEAR(addr_v6);
 
     if (!addr)
     {
@@ -1077,10 +1018,12 @@ net_addr_v6_add(openvpn_net_ctx_t *ctx, const char *iface, const struct in6_addr
 }
 
 int
-net_addr_v4_del(openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *addr, int prefixlen)
+net_addr_v4_del(const openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *addr, int prefixlen)
 {
-    inet_address_t addr_v4 = { 0 };
+    inet_address_t addr_v4;
     char buf[INET_ADDRSTRLEN];
+
+    CLEAR(addr_v4);
 
     if (!addr)
     {
@@ -1096,11 +1039,13 @@ net_addr_v4_del(openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *addr
 }
 
 int
-net_addr_v6_del(openvpn_net_ctx_t *ctx, const char *iface, const struct in6_addr *addr,
+net_addr_v6_del(const openvpn_net_ctx_t *ctx, const char *iface, const struct in6_addr *addr,
                 int prefixlen)
 {
-    inet_address_t addr_v6 = { 0 };
+    inet_address_t addr_v6;
     char buf[INET6_ADDRSTRLEN];
+
+    CLEAR(addr_v6);
 
     if (!addr)
     {
@@ -1116,13 +1061,16 @@ net_addr_v6_del(openvpn_net_ctx_t *ctx, const char *iface, const struct in6_addr
 }
 
 int
-net_addr_ptp_v4_add(openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *local,
+net_addr_ptp_v4_add(const openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *local,
                     const in_addr_t *remote)
 {
-    inet_address_t local_v4 = { 0 };
-    inet_address_t remote_v4 = { 0 };
+    inet_address_t local_v4;
+    inet_address_t remote_v4;
     char buf1[INET_ADDRSTRLEN];
     char buf2[INET_ADDRSTRLEN];
+
+    CLEAR(local_v4);
+    CLEAR(remote_v4);
 
     if (!local)
     {
@@ -1144,12 +1092,13 @@ net_addr_ptp_v4_add(openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *
 }
 
 int
-net_addr_ptp_v4_del(openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *local,
+net_addr_ptp_v4_del(const openvpn_net_ctx_t *ctx, const char *iface, const in_addr_t *local,
                     const in_addr_t *remote)
 {
-    inet_address_t local_v4 = { 0 };
+    inet_address_t local_v4;
     char buf[INET6_ADDRSTRLEN];
 
+    CLEAR(local_v4);
 
     if (!local)
     {
@@ -1169,17 +1118,6 @@ sitnl_route_add(const char *iface, sa_family_t af_family, const void *dst, int p
                 const void *gw, uint32_t table, int metric)
 {
     enum rt_scope_t scope = RT_SCOPE_UNIVERSE;
-    int ifindex = 0;
-
-    if (iface)
-    {
-        ifindex = if_nametoindex(iface);
-        if (ifindex == 0)
-        {
-            msg(M_WARN | M_ERRNO, "%s: rtnl: can't get ifindex for %s", __func__, iface);
-            return -ENOENT;
-        }
-    }
 
     if (table == 0)
     {
@@ -1191,12 +1129,12 @@ sitnl_route_add(const char *iface, sa_family_t af_family, const void *dst, int p
         scope = RT_SCOPE_LINK;
     }
 
-    return sitnl_route_set(RTM_NEWROUTE, NLM_F_CREATE, ifindex, af_family, dst, prefixlen, gw,
+    return sitnl_route_set(RTM_NEWROUTE, NLM_F_CREATE, iface, af_family, dst, prefixlen, gw,
                            table, metric, scope, RTPROT_BOOT, RTN_UNICAST);
 }
 
 int
-net_route_v4_add(openvpn_net_ctx_t *ctx, const in_addr_t *dst, int prefixlen, const in_addr_t *gw,
+net_route_v4_add(const openvpn_net_ctx_t *ctx, const in_addr_t *dst, int prefixlen, const in_addr_t *gw,
                  const char *iface, uint32_t table, int metric)
 {
     const in_addr_t *dst_ptr = NULL, *gw_ptr = NULL;
@@ -1224,13 +1162,16 @@ net_route_v4_add(openvpn_net_ctx_t *ctx, const in_addr_t *dst, int prefixlen, co
 }
 
 int
-net_route_v6_add(openvpn_net_ctx_t *ctx, const struct in6_addr *dst, int prefixlen,
+net_route_v6_add(const openvpn_net_ctx_t *ctx, const struct in6_addr *dst, int prefixlen,
                  const struct in6_addr *gw, const char *iface, uint32_t table, int metric)
 {
-    inet_address_t dst_v6 = { 0 };
-    inet_address_t gw_v6 = { 0 };
+    inet_address_t dst_v6;
+    inet_address_t gw_v6;
     char dst_str[INET6_ADDRSTRLEN];
     char gw_str[INET6_ADDRSTRLEN];
+
+    CLEAR(dst_v6);
+    CLEAR(gw_v6);
 
     if (dst)
     {
@@ -1253,35 +1194,26 @@ static int
 sitnl_route_del(const char *iface, sa_family_t af_family, const inet_address_t *dst, int prefixlen,
                 const inet_address_t *gw, uint32_t table, int metric)
 {
-    int ifindex = 0;
-
-    if (iface)
-    {
-        ifindex = if_nametoindex(iface);
-        if (ifindex == 0)
-        {
-            msg(M_WARN | M_ERRNO, "%s: rtnl: can't get ifindex for %s", __func__, iface);
-            return -ENOENT;
-        }
-    }
-
     if (table == 0)
     {
         table = RT_TABLE_MAIN;
     }
 
-    return sitnl_route_set(RTM_DELROUTE, 0, ifindex, af_family, dst, prefixlen, gw, table, metric,
+    return sitnl_route_set(RTM_DELROUTE, 0, iface, af_family, dst, prefixlen, gw, table, metric,
                            RT_SCOPE_NOWHERE, 0, 0);
 }
 
 int
-net_route_v4_del(openvpn_net_ctx_t *ctx, const in_addr_t *dst, int prefixlen, const in_addr_t *gw,
+net_route_v4_del(const openvpn_net_ctx_t *ctx, const in_addr_t *dst, int prefixlen, const in_addr_t *gw,
                  const char *iface, uint32_t table, int metric)
 {
-    inet_address_t dst_v4 = { 0 };
-    inet_address_t gw_v4 = { 0 };
+    inet_address_t dst_v4;
+    inet_address_t gw_v4;
     char dst_str[INET_ADDRSTRLEN];
     char gw_str[INET_ADDRSTRLEN];
+
+    CLEAR(dst_v4);
+    CLEAR(gw_v4);
 
     if (dst)
     {
@@ -1301,13 +1233,16 @@ net_route_v4_del(openvpn_net_ctx_t *ctx, const in_addr_t *dst, int prefixlen, co
 }
 
 int
-net_route_v6_del(openvpn_net_ctx_t *ctx, const struct in6_addr *dst, int prefixlen,
+net_route_v6_del(const openvpn_net_ctx_t *ctx, const struct in6_addr *dst, int prefixlen,
                  const struct in6_addr *gw, const char *iface, uint32_t table, int metric)
 {
-    inet_address_t dst_v6 = { 0 };
-    inet_address_t gw_v6 = { 0 };
+    inet_address_t dst_v6;
+    inet_address_t gw_v6;
     char dst_str[INET6_ADDRSTRLEN];
     char gw_str[INET6_ADDRSTRLEN];
+
+    CLEAR(dst_v6);
+    CLEAR(gw_v6);
 
     if (dst)
     {
@@ -1328,7 +1263,7 @@ net_route_v6_del(openvpn_net_ctx_t *ctx, const struct in6_addr *dst, int prefixl
 
 
 int
-net_iface_new(openvpn_net_ctx_t *ctx, const char *iface, const char *type, const void *arg)
+net_iface_new(const openvpn_net_ctx_t *ctx, const char *iface, const char *type, const void *arg)
 {
     struct sitnl_link_req req = {};
     int ret = -1;
@@ -1431,10 +1366,10 @@ sitnl_type_save(struct nlmsghdr *n, void *arg)
 }
 
 int
-net_iface_type(openvpn_net_ctx_t *ctx, const char *iface, char type[IFACE_TYPE_LEN_MAX])
+net_iface_type(const openvpn_net_ctx_t *ctx, const char *iface, char type[IFACE_TYPE_LEN_MAX])
 {
     struct sitnl_link_req req = {};
-    int ifindex = if_nametoindex(iface);
+    int ifindex = (int)if_nametoindex(iface);
 
     if (!ifindex)
     {
@@ -1463,10 +1398,10 @@ net_iface_type(openvpn_net_ctx_t *ctx, const char *iface, char type[IFACE_TYPE_L
 }
 
 int
-net_iface_del(openvpn_net_ctx_t *ctx, const char *iface)
+net_iface_del(const openvpn_net_ctx_t *ctx, const char *iface)
 {
     struct sitnl_link_req req = {};
-    int ifindex = if_nametoindex(iface);
+    int ifindex = (int)if_nametoindex(iface);
 
     if (!ifindex)
     {
@@ -1484,6 +1419,10 @@ net_iface_del(openvpn_net_ctx_t *ctx, const char *iface)
 
     return sitnl_send(&req.n, 0, 0, NULL, NULL);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* !ENABLE_SITNL */
 

@@ -159,11 +159,16 @@ send_control(const socket_descriptor_t fd, int code)
     }
 }
 
-static int
+static socklen_t
 cmsg_size(void)
 {
     return CMSG_SPACE(sizeof(socket_descriptor_t));
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 /*
  * Send a command (char), data (head), and a file descriptor (sd_send) to a local process
@@ -341,11 +346,19 @@ journal_add(const char *journal_dir, const struct proxy_connection *pc, struct p
         check_malloc_return(jfn);
         snprintf(jfn, fnlen, "%s/%s", journal_dir, t);
         dmsg(D_PS_PROXY_DEBUG, "PORT SHARE PROXY: client origin %s -> %s", jfn, f);
-        int fd = platform_open(jfn, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP);
+        /* never write through a pre-existing symlink or hardlink */
+        const int flags = O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW;
+        int fd = platform_open(jfn, flags, S_IRUSR | S_IWUSR | S_IRGRP);
+        if (fd == -1 && errno == EEXIST)
+        {
+            /* stale entry, e.g. left behind by a killed proxy process */
+            unlink(jfn);
+            fd = platform_open(jfn, flags, S_IRUSR | S_IWUSR | S_IRGRP);
+        }
         if (fd != -1)
         {
-            ssize_t write_len = strlen(f);
-            if (write(fd, f, write_len) != write_len)
+            const size_t write_len = strlen(f);
+            if (write(fd, f, write_len) != (ssize_t)write_len)
             {
                 msg(M_WARN, "PORT SHARE: writing to journal file (%s) failed", jfn);
             }
@@ -609,6 +622,10 @@ proxy_connection_io_send(struct proxy_connection *pc, int *bytes_sent)
     }
     return IOSTAT_GOOD;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * Forward data from pc to pc->counterpart.

@@ -58,16 +58,12 @@
  * <tt>[ * xxx * ]</tt> = encrypted and authenticated
  *
  * @par
- * <b>CBC data channel cypto format</b> \n
- * In CBC mode, both TLS-mode and static key mode are supported. The IV
- * consists of random bits to provide unpredictable IVs. \n
+ * <b>CBC data channel crypto format</b> \n
+ * The IV consists of random bits to provide unpredictable IVs. \n
  * <i>CBC IV format:</i> \n
  * <tt> [ - random - ] </tt> \n
- * <i>CBC data channel crypto format in TLS-mode:</i> \n
+ * <i>CBC data channel crypto format:</i> \n
  * <tt> [ HMAC ] [ - IV - ] [ * packet ID * ] [ * packet payload * ] </tt> \n
- * <i>CBC data channel crypto format in static key mode:</i> \n
- * <tt> [ HMAC ] [ - IV - ] [ * packet ID * ] [ * timestamp * ]
- * [ * packet payload * ] </tt>
  *
  * @par
  * <b>CFB/OFB data channel crypto format</b> \n
@@ -109,14 +105,11 @@
  *
  * @par
  * <b>No-crypto data channel format</b> \n
- * In no-crypto mode (\c \-\-cipher \c none is specified), both TLS-mode and
- * static key mode are supported. No encryption will be performed on the packet,
- * but packets can still be authenticated. This mode does not require an IV.\n
- * <i>No-crypto data channel crypto format in TLS-mode:</i> \n
+ * In no-crypto mode (\c \-\-cipher \c none is specified), no encryption
+ * will be performed on the packet,  but packets can still be authenticated.
+ * This mode does not require an IV.\n
+ * <i>No-crypto data channel crypto format:</i> \n
  * <tt> [ HMAC ] [ - packet ID - ] [ - packet payload - ] </tt> \n
- * <i>No-crypto data channel crypto format in static key mode:</i> \n
- * <tt> [ HMAC ] [ - packet ID - ] [ - timestamp - ] [ - packet payload - ] </tt>
- *
  */
 
 #ifndef CRYPTO_H
@@ -339,11 +332,6 @@ struct crypto_options
                                  *   The packet id also used as the IV
                                  *   for AEAD/OFB/CFG ciphers.
                                  */
-    struct packet_id_persist *pid_persist;
-    /**< Persistent packet ID state for
-     *   keeping state between successive
-     *   OpenVPN process startups. */
-
 #define CO_PACKET_ID_LONG_FORM         (1u << 0)
     /**< Bit-flag indicating whether to use
      *   OpenVPN's long packet ID format. */
@@ -414,19 +402,15 @@ void read_key_file(struct key2 *key2, const char *file, const unsigned int flags
  */
 int write_key_file(const int nkeys, const char *filename);
 
-bool check_key(const struct key *key, const struct key_type *kt);
-
 /**
  * Initialize a key_type structure with.
  *
  * @param kt          The struct key_type to initialize
  * @param ciphername  The name of the cipher to use
  * @param authname    The name of the HMAC digest to use
- * @param tls_mode    Specifies whether we are running in TLS mode, which allows
- *                    more ciphers than static key mode.
  * @param warn        Print warnings when null cipher / auth is used.
  */
-void init_key_type(struct key_type *kt, const char *ciphername, const char *authname, bool tls_mode,
+void init_key_type(struct key_type *kt, const char *ciphername, const char *authname,
                    bool warn);
 
 /*
@@ -621,7 +605,7 @@ void test_crypto(struct crypto_options *co, const struct frame *f);
 
 void key_direction_state_init(struct key_direction_state *kds, int key_direction);
 
-void verify_fix_key2(struct key2 *key2, const struct key_type *kt, const char *shared_secret_file);
+void check_key2(struct key2 *key2);
 
 void must_have_n_keys(const char *filename, const char *option, const struct key2 *key2, int n);
 
@@ -762,12 +746,12 @@ bool check_tls_prf_working(void);
  * to read.
  */
 static inline bool
-aead_usage_limit_reached(const uint64_t limit, const struct key_ctx *key_ctx, int64_t higest_pid)
+aead_usage_limit_reached(const uint64_t limit, const struct key_ctx *key_ctx, uint64_t higest_pid)
 {
     /* This is the  q + s <=  p^(1/2) * 2^(129/2) - 1 calculation where
      * q is the number of protected messages (highest_pid)
      * s Total plaintext length in all messages (in blocks) */
-    return (limit > 0 && key_ctx->plaintext_blocks + (uint64_t)higest_pid > limit);
+    return (limit > 0 && key_ctx->plaintext_blocks + higest_pid > limit);
 }
 
 #endif /* CRYPTO_H */

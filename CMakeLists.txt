@@ -117,7 +117,7 @@ else ()
     check_and_add_compiler_flag(-Wno-stringop-truncation NoStringOpTruncation)
     check_and_add_compiler_flag(-Wstrict-prototypes StrictPrototypes)
     check_and_add_compiler_flag(-Wold-style-definition OldStyleDefinition)
-    add_compile_options(-Wconversion -Wno-sign-conversion)
+    add_compile_options(-Wconversion)
     add_compile_options(-Wextra -Wno-unused-parameter)
     # clang doesn't have the different levels but also doesn't include it in -Wextra
     check_and_add_compiler_flag(-Wimplicit-fallthrough=2 GCCImplicitFallthrough)
@@ -434,6 +434,8 @@ set(SOURCE_FILES
     src/compat/compat-strlcpy.c
     src/compat/compat-strsep.c
     src/compat/compat-strtok_r.c
+    src/openvpn/acc.c
+    src/openvpn/acc.h
     src/openvpn/argv.c
     src/openvpn/argv.h
     src/openvpn/base64.c
@@ -455,6 +457,8 @@ set(SOURCE_FILES
     src/openvpn/console.c
     src/openvpn/console_builtin.c
     src/openvpn/console.h
+    src/openvpn/control_msg.c
+    src/openvpn/control_msg.h
     src/openvpn/crypto.c
     src/openvpn/crypto.h
     src/openvpn/crypto_backend.h
@@ -821,6 +825,8 @@ if (BUILD_TESTING)
             tests/unit_tests/openvpn/mock_management.c
             tests/unit_tests/openvpn/mock_ssl_dependencies.c
             tests/unit_tests/openvpn/mock_win32_execve.c
+            tests/unit_tests/openvpn/test_acc.c
+            src/openvpn/acc.c
             src/openvpn/argv.c
             src/openvpn/base64.c
             src/openvpn/crypto_epoch.c
@@ -836,6 +842,7 @@ if (BUILD_TESTING)
             src/openvpn/packet_id.c
             src/openvpn/run_command.c
             src/openvpn/ssl_mbedtls.c
+            src/openvpn/ssl_ncp.c
             src/openvpn/ssl_openssl.c
             src/openvpn/ssl_util.c
             src/openvpn/ssl_verify_mbedtls.c
@@ -891,6 +898,8 @@ if (BUILD_TESTING)
 
     target_sources(test_pkt PRIVATE
         tests/unit_tests/openvpn/mock_win32_execve.c
+        tests/unit_tests/openvpn/test_control_msg.c
+        src/openvpn/control_msg.c
         src/openvpn/argv.c
         src/openvpn/base64.c
         src/openvpn/crypto_epoch.c
@@ -968,7 +977,14 @@ if (BUILD_TESTING)
     if (TARGET test_networking)
         target_link_options(test_networking PRIVATE -Wl,--wrap=parse_line)
         target_compile_options(test_networking PRIVATE -UNDEBUG)
+        target_link_libraries(test_networking PUBLIC ${RESOLV_LIBRARIES})
         target_sources(test_networking PRIVATE
+            tests/unit_tests/openvpn/test_route.c
+            tests/unit_tests/openvpn/mock_management.c
+            src/openvpn/route.c
+            src/openvpn/env_set.c
+            src/openvpn/run_command.c
+            src/openvpn/socket_util.c
             src/openvpn/networking_sitnl.c
             src/openvpn/crypto_epoch.c
             src/openvpn/crypto_mbedtls.c

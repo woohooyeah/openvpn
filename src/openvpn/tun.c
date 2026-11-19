@@ -112,6 +112,11 @@ static void exec_command(const char *prefix, const struct argv *a, int n, msglvl
 
 static const char *netsh_get_id(const char *dev_node, struct gc_arena *gc);
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static bool
 do_address_service(const bool add, const short family, const struct tuntap *tt)
 {
@@ -479,6 +484,10 @@ out:
     return ret;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #endif /* ifdef _WIN32 */
 
 #ifdef TARGET_SOLARIS
@@ -666,7 +675,6 @@ check_addr_clash(const char *name, int type, in_addr_t public, in_addr_t local,
 void
 warn_on_use_of_common_subnets(openvpn_net_ctx_t *ctx)
 {
-    struct gc_arena gc = gc_new();
     struct route_gateway_info rgi;
     const unsigned int needed = (RGI_ADDR_DEFINED | RGI_NETMASK_DEFINED);
 
@@ -680,7 +688,6 @@ warn_on_use_of_common_subnets(openvpn_net_ctx_t *ctx)
                 "NOTE: your local LAN uses the extremely common subnet address 192.168.0.x or 192.168.1.x.  Be aware that this might create routing conflicts if you connect to the VPN server from public locations such as internet cafes that use the same subnet.");
         }
     }
-    gc_free(&gc);
 }
 
 /*
@@ -816,6 +823,11 @@ do_ifconfig_setenv(const struct tuntap *tt, struct env_set *es)
 
     gc_free(&gc);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 /*
  * Init tun/tap object.
@@ -967,7 +979,7 @@ init_tun_post(struct tuntap *tt, const struct frame *frame, const struct tuntap_
 #endif /* ifdef _WIN32 */
 }
 
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(TARGET_DRAGONFLY)
 
 /* some of the platforms will auto-add a "network route" pointing
  * to the interface on "ifconfig tunX 2001:db8::1/64", others need
@@ -988,7 +1000,7 @@ add_route_connected_v6_net(const struct tuntap *tt, const struct env_set *es)
     add_route_ipv6(&r6, tt, 0, es, NULL);
 }
 
-void
+static void
 delete_route_connected_v6_net(const struct tuntap *tt)
 {
     struct route_ipv6 r6;
@@ -1002,11 +1014,9 @@ delete_route_connected_v6_net(const struct tuntap *tt)
     route_ipv6_clear_host_bits(&r6);
     delete_route_ipv6(&r6, tt, NULL, NULL);
 }
-#endif /* if defined(_WIN32) || defined(TARGET_DARWIN) || defined(TARGET_NETBSD) || \
-          defined(TARGET_OPENBSD) */
+#endif /* if defined(_WIN32) || defined(TARGET_DRAGONFLY) */
 
-#if defined(TARGET_FREEBSD) || defined(TARGET_DRAGONFLY) || defined(TARGET_NETBSD) \
-    || defined(TARGET_OPENBSD)
+#if defined(TARGET_NETBSD) || defined(TARGET_OPENBSD)
 /* we can't use true subnet mode on tun on all platforms, as that
  * conflicts with IPv6 (wants to use ND then, which we don't do),
  * but the OSes want "a remote address that is different from ours"
@@ -1016,7 +1026,7 @@ delete_route_connected_v6_net(const struct tuntap *tt)
  * is still point to point and no layer 2 resolution is done...
  */
 
-in_addr_t
+static in_addr_t
 create_arbitrary_remote(const struct tuntap *tt)
 {
     in_addr_t remote;
@@ -1042,7 +1052,7 @@ create_arbitrary_remote(const struct tuntap *tt)
  * @param ctx       the networking API opaque context
  */
 static void
-do_ifconfig_ipv6(struct tuntap *tt, const char *ifname, int tun_mtu, const struct env_set *es,
+do_ifconfig_ipv6(const struct tuntap *tt, const char *ifname, int tun_mtu, const struct env_set *es,
                  openvpn_net_ctx_t *ctx)
 {
 #if !defined(TARGET_LINUX)
@@ -1149,6 +1159,10 @@ do_ifconfig_ipv6(struct tuntap *tt, const char *ifname, int tun_mtu, const struc
     openvpn_execve_check(&argv, es, S_FATAL, "FreeBSD BSD 'ifconfig inet6 -ifdisabled' failed");
 #endif
 
+#ifdef TARGET_DRAGONFLY
+    add_route_connected_v6_net(tt, es);
+#endif
+
 #elif defined(TARGET_AIX)
     argv_printf(&argv, "%s %s inet6 %s/%d mtu %d up", IFCONFIG_PATH, ifname, ifconfig_ipv6_local,
                 tt->netbits_ipv6, tun_mtu);
@@ -1233,7 +1247,7 @@ do_ifconfig_ipv6(struct tuntap *tt, const char *ifname, int tun_mtu, const struc
  * @param ctx       the networking API opaque context
  */
 static void
-do_ifconfig_ipv4(struct tuntap *tt, const char *ifname, int tun_mtu, const struct env_set *es,
+do_ifconfig_ipv4(const struct tuntap *tt, const char *ifname, int tun_mtu, const struct env_set *es,
                  openvpn_net_ctx_t *ctx)
 {
 #if !defined(_WIN32) && !defined(TARGET_ANDROID)
@@ -1479,7 +1493,7 @@ do_ifconfig_ipv4(struct tuntap *tt, const char *ifname, int tun_mtu, const struc
     }
 
     argv_msg(M_INFO, &argv);
-    openvpn_execve_check(&argv, es, S_FATAL, "FreeBSD ifconfig failed");
+    openvpn_execve_check(&argv, es, S_FATAL, "FreeBSD/DragonFly ifconfig failed");
 
 #elif defined(TARGET_AIX)
     {
@@ -1558,6 +1572,10 @@ do_ifconfig_ipv4(struct tuntap *tt, const char *ifname, int tun_mtu, const struc
 #endif
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 /* execute the ifconfig command through the shell */
 void
 do_ifconfig(struct tuntap *tt, const char *ifname, int tun_mtu, const struct env_set *es,
@@ -1589,7 +1607,7 @@ do_ifconfig(struct tuntap *tt, const char *ifname, int tun_mtu, const struct env
 }
 
 static void
-undo_ifconfig_ipv4(const struct tuntap *tt, openvpn_net_ctx_t *ctx)
+undo_ifconfig_ipv4(const struct tuntap *tt, const openvpn_net_ctx_t *ctx)
 {
 #if defined(TARGET_LINUX)
     int netbits = netmask_to_netbits2(tt->remote_netmask);
@@ -1608,14 +1626,14 @@ undo_ifconfig_ipv4(const struct tuntap *tt, openvpn_net_ctx_t *ctx)
             msg(M_WARN, "Linux can't del IP from iface %s", tt->actual_name);
         }
     }
-#elif defined(TARGET_FREEBSD)
+#elif defined(TARGET_FREEBSD) || defined(TARGET_DRAGONFLY)
     struct gc_arena gc = gc_new();
     const char *ifconfig_local = print_in_addr_t(tt->local, 0, &gc);
     struct argv argv = argv_new();
 
     argv_printf(&argv, "%s %s %s -alias", IFCONFIG_PATH, tt->actual_name, ifconfig_local);
     argv_msg(M_INFO, &argv);
-    openvpn_execve_check(&argv, NULL, 0, "FreeBSD ip addr del failed");
+    openvpn_execve_check(&argv, NULL, 0, "FreeBSD/DragonFly ip addr del failed");
 
     argv_free(&argv);
     gc_free(&gc);
@@ -1624,14 +1642,19 @@ undo_ifconfig_ipv4(const struct tuntap *tt, openvpn_net_ctx_t *ctx)
 }
 
 static void
-undo_ifconfig_ipv6(const struct tuntap *tt, openvpn_net_ctx_t *ctx)
+undo_ifconfig_ipv6(const struct tuntap *tt, const openvpn_net_ctx_t *ctx)
 {
 #if defined(TARGET_LINUX)
     if (net_addr_v6_del(ctx, tt->actual_name, &tt->local_ipv6, tt->netbits_ipv6) < 0)
     {
         msg(M_WARN, "Linux can't del IPv6 from iface %s", tt->actual_name);
     }
-#elif defined(TARGET_FREEBSD)
+#elif defined(TARGET_FREEBSD) || defined(TARGET_DRAGONFLY)
+
+#ifdef TARGET_DRAGONFLY
+    delete_route_connected_v6_net(tt);
+#endif
+
     struct gc_arena gc = gc_new();
     const char *ifconfig_ipv6_local = print_in6_addr(tt->local_ipv6, 0, &gc);
     struct argv argv = argv_new();
@@ -1640,7 +1663,7 @@ undo_ifconfig_ipv6(const struct tuntap *tt, openvpn_net_ctx_t *ctx)
                 ifconfig_ipv6_local, tt->netbits_ipv6);
 
     argv_msg(M_INFO, &argv);
-    openvpn_execve_check(&argv, NULL, 0, "FreeBSD ip -6 addr del failed");
+    openvpn_execve_check(&argv, NULL, 0, "FreeBSD/DragonFly ip -6 addr del failed");
 
     argv_free(&argv);
     gc_free(&gc);
@@ -1702,6 +1725,11 @@ clear_tuntap(struct tuntap *tuntap)
 
 #include <netinet/ip.h>
 #include <sys/uio.h>
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 static inline ssize_t
 header_modify_read_write_return(ssize_t len)
@@ -1786,6 +1814,10 @@ read_tun(const struct tuntap *tt, uint8_t *buf, int len)
 {
     return read_tun_header(tt, buf, len);
 }
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
 #endif
 
 #endif /* if defined(TARGET_FREEBSD) || defined(TARGET_DRAGONFLY) || defined(TARGET_NETBSD) || defined (TARGET_OPENBSD) || defined(TARGET_DARWIN) */
@@ -2045,6 +2077,11 @@ close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
     free(tt);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 ssize_t
 write_tun(const struct tuntap *tt, const uint8_t *buf, int len)
 {
@@ -2056,6 +2093,10 @@ read_tun(const struct tuntap *tt, uint8_t *buf, int len)
 {
     return read(tt->fd, buf, len);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #elif defined(TARGET_LINUX)
 
@@ -2090,14 +2131,11 @@ open_tun(const char *dev, const char *dev_type, const char *dev_node, struct tun
             msg(M_ERR, "ERROR: Cannot open TUN/TAP dev %s", node);
         }
 
-        /*
-         * Process --tun-ipv6
-         */
         CLEAR(ifr);
         ifr.ifr_flags = IFF_NO_PI;
 
-#if defined(IFF_ONE_QUEUE) && defined(SIOCSIFTXQLEN)
-        ifr.ifr_flags |= IFF_ONE_QUEUE;
+#ifdef IFF_BACKPRESSURE
+        ifr.ifr_flags |= IFF_BACKPRESSURE;
 #endif
 
         /*
@@ -2138,7 +2176,6 @@ open_tun(const char *dev, const char *dev_type, const char *dev_node, struct tun
         /*
          * Try making the TX send queue bigger
          */
-#if defined(IFF_ONE_QUEUE) && defined(SIOCSIFTXQLEN)
         if (tt->options.txqueuelen)
         {
             struct ifreq netifr;
@@ -2164,7 +2201,6 @@ open_tun(const char *dev, const char *dev_type, const char *dev_node, struct tun
                 msg(M_WARN | M_ERRNO, "Note: Cannot open control socket on %s", ifr.ifr_name);
             }
         }
-#endif /* if defined(IFF_ONE_QUEUE) && defined(SIOCSIFTXQLEN) */
 
         set_nonblock(tt->fd);
         set_cloexec(tt->fd);
@@ -2250,6 +2286,11 @@ close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
     free(tt);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 ssize_t
 write_tun(const struct tuntap *tt, const uint8_t *buf, int len)
 {
@@ -2261,6 +2302,10 @@ read_tun(const struct tuntap *tt, uint8_t *buf, int len)
 {
     return read(tt->fd, buf, len);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #elif defined(TARGET_SOLARIS)
 
@@ -2851,20 +2896,70 @@ close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
 
 #elif defined(TARGET_DRAGONFLY)
 
+/* DragonFly tun/tap devices are similar to NetBSD
+ *  - for a dynamic tun/tap, open /dev/tun or /dev/tap, get assigned
+ *    the first free device, ask with (f)devname(3) what you got, and
+ *    the interface will auto-destruct on close
+ *  - for a pre-created tun/tap, open "/dev/tun3"
+ *  - using "--dev tun3" and have it dynamically created needs a call
+ *    to "ifconfig tun3 create" which we don't currently do
+ */
+
 void
 open_tun(const char *dev, const char *dev_type, const char *dev_node, struct tuntap *tt,
          openvpn_net_ctx_t *ctx)
 {
-    open_tun_generic(dev, dev_type, dev_node, tt);
-
-    if (tt->fd >= 0)
+    if (!dev_node && (strcmp(dev, "tap") == 0 || strcmp(dev, "tun") == 0))
     {
-        int i = 0;
+        char tunname[256];
+        snprintf(tunname, sizeof(tunname), "/dev/%s", dev);
 
-        /* Disable extended modes */
+        if ((tt->fd = open(tunname, O_RDWR)) < 0)
+        {
+            msg(M_ERR, "Cannot allocate DragonFly TUN/TAP %s dynamically", tunname);
+        }
+
+        char *devname = fdevname(tt->fd);
+        if (devname == NULL)
+        {
+            msg(M_ERR, "Cannot query DragonFly TUN/TAP device name");
+        }
+        set_nonblock(tt->fd);
+        set_cloexec(tt->fd); /* don't pass fd to scripts */
+        msg(M_INFO, "TUN/TAP device %s opened", devname);
+
+        tt->actual_name = string_alloc(devname, NULL);
+    }
+    else
+    {
+        open_tun_generic(dev, dev_type, dev_node, tt);
+    }
+
+    if (tt->fd >= 0 && tt->type == DEV_TYPE_TUN)
+    {
+        /* see "Interface Flags" in ifnet(9) */
+        int i = IFF_POINTOPOINT | IFF_MULTICAST;
+        if (tt->topology == TOP_SUBNET)
+        {
+            i = IFF_BROADCAST | IFF_MULTICAST;
+        }
+
+        if (ioctl(tt->fd, TUNSIFMODE, &i) < 0)
+        {
+            msg(M_WARN | M_ERRNO, "ioctl(TUNSIFMODE)");
+        }
+
+        /* Disable "link layer" mode (would prepend route-nexthop address
+         * on read, but is incompatible with TUNSIFHEAD multi-af mode) */
+        i = 0;
         ioctl(tt->fd, TUNSLMODE, &i);
+
+        /* multi_af mode for v4+v6, see "tun(4)" */
         i = 1;
-        ioctl(tt->fd, TUNSIFHEAD, &i);
+        if (ioctl(tt->fd, TUNSIFHEAD, &i) < 0)
+        {
+            msg(M_WARN | M_ERRNO, "ioctl(TUNSIFHEAD)");
+        }
     }
 }
 
@@ -2878,6 +2973,11 @@ close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
 }
 
 #elif defined(TARGET_DARWIN)
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 /* Darwin (MacOS X) is mostly "just use the generic stuff", but there
  * is always one caveat...:
@@ -2943,6 +3043,10 @@ utun_open_helper(struct ctl_info ctlInfo, int utunnum)
 
     return fd;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 void
 open_darwin_utun(const char *dev, const char *dev_type, const char *dev_node, struct tuntap *tt)
@@ -3093,6 +3197,11 @@ close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
     gc_free(&gc);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 ssize_t
 write_tun(const struct tuntap *tt, const uint8_t *buf, int len)
 {
@@ -3118,6 +3227,10 @@ read_tun(const struct tuntap *tt, uint8_t *buf, int len)
         return read(tt->fd, buf, len);
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 #elif defined(TARGET_AIX)
 
@@ -3255,6 +3368,11 @@ read_tun(const struct tuntap *tt, uint8_t *buf, int len)
 
 #elif defined(_WIN32)
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 int
 tun_read_queue(struct tuntap *tt, int maxsize)
 {
@@ -3301,7 +3419,7 @@ tun_read_queue(struct tuntap *tt, int maxsize)
                 tt->reads.iostate = IOSTATE_IMMEDIATE_RETURN;
                 tt->reads.status = err;
                 dmsg(D_WIN32_IO, "WIN32 I/O: TAP Read error [%d] : %s", len,
-                     strerror_win32(status, &gc));
+                     strerror_win32(err, &gc));
                 gc_free(&gc);
             }
         }
@@ -3948,7 +4066,7 @@ at_least_one_tap_win(const struct tap_reg *tap_reg)
  * registry for the TAP device # = device_number.
  */
 static const char *
-get_unspecified_device_guid(const int device_number, uint8_t *actual_name, int actual_name_size,
+get_unspecified_device_guid(const int device_number, uint8_t *actual_name, size_t actual_name_size,
                             const struct tap_reg *tap_reg_src,
                             const struct panel_reg *panel_reg_src,
                             enum tun_driver_type *windows_driver, struct gc_arena *gc)
@@ -4011,7 +4129,7 @@ get_unspecified_device_guid(const int device_number, uint8_t *actual_name, int a
  * returning the GUID and optional actual_name and device type
  */
 static const char *
-get_device_guid(const char *name, uint8_t *actual_name, int actual_name_size,
+get_device_guid(const char *name, uint8_t *actual_name, size_t actual_name_size,
                 enum tun_driver_type *windows_driver, const struct tap_reg *tap_reg,
                 const struct panel_reg *panel_reg, struct gc_arena *gc)
 {
@@ -4125,6 +4243,7 @@ get_per_adapter_info(const DWORD index, struct gc_arena *gc)
             {
                 msg(M_INFO, "GetPerAdapterInfo #2 failed (status=%lu) : %s", status,
                     strerror_win32(status, gc));
+                pi = NULL;
             }
         }
     }
@@ -4154,6 +4273,7 @@ get_interface_info_list(struct gc_arena *gc)
         {
             msg(M_INFO, "GetInterfaceInfo #2 failed (status=%lu) : %s", status,
                 strerror_win32(status, gc));
+            ii = NULL;
         }
     }
     return ii;
@@ -5203,7 +5323,6 @@ static void
 windows_set_mtu(const int iface_index, const short family, const int mtu)
 {
     DWORD err = 0;
-    struct gc_arena gc = gc_new();
     MIB_IPINTERFACE_ROW ipiface;
     InitializeIpInterfaceEntry(&ipiface);
     const char *family_name = (family == AF_INET6) ? "IPv6" : "IPv4";
@@ -5228,8 +5347,10 @@ windows_set_mtu(const int iface_index, const short family, const int mtu)
 
     if (err != NO_ERROR)
     {
+        struct gc_arena gc = gc_new();
         msg(M_WARN, "TUN: Setting %s mtu failed: %s [status=%lu if_index=%d]", family_name,
             strerror_win32(err, &gc), err, iface_index);
+        gc_free(&gc);
     }
     else
     {
@@ -6024,8 +6145,9 @@ tap_win_getinfo(const struct tuntap *tt, struct gc_arena *gc)
     {
         struct buffer out = alloc_buf_gc(256, gc);
         DWORD len;
-        if (DeviceIoControl(tt->hand, TAP_WIN_IOCTL_GET_INFO, BSTR(&out), BCAP(&out), BSTR(&out),
-                            BCAP(&out), &len, NULL))
+        if (DeviceIoControl(tt->hand, TAP_WIN_IOCTL_GET_INFO, BSTR(&out),
+                            (DWORD)BCAP(&out), BSTR(&out),
+                            (DWORD)BCAP(&out), &len, NULL))
         {
             return BSTR(&out);
         }
@@ -6040,8 +6162,8 @@ tun_show_debug(const struct tuntap *tt)
     {
         struct buffer out = alloc_buf(1024);
         DWORD len;
-        while (DeviceIoControl(tt->hand, TAP_WIN_IOCTL_GET_LOG_LINE, BSTR(&out), BCAP(&out),
-                               BSTR(&out), BCAP(&out), &len, NULL))
+        while (DeviceIoControl(tt->hand, TAP_WIN_IOCTL_GET_LOG_LINE, BSTR(&out), (DWORD)BCAP(&out),
+                               BSTR(&out), (DWORD)BCAP(&out), &len, NULL))
         {
             msg(D_TAP_WIN_DEBUG, "TAP-Windows: %s", BSTR(&out));
         }
@@ -6095,6 +6217,10 @@ netsh_delete_address_dns(const struct tuntap *tt, bool ipv6, struct gc_arena *gc
 
     argv_free(&argv);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 void
 close_tun_handle(struct tuntap *tt)
@@ -6275,7 +6401,7 @@ ipset2ascii_all(struct gc_arena *gc)
     return BSTR(&out);
 }
 
-#else                        /* generic */
+#else  /* generic */
 
 void
 open_tun(const char *dev, const char *dev_type, const char *dev_node, struct tuntap *tt,
@@ -6305,4 +6431,4 @@ read_tun(const struct tuntap *tt, uint8_t *buf, int len)
     return read(tt->fd, buf, len);
 }
 
-#endif                       /* if defined (TARGET_ANDROID) */
+#endif /* if defined (TARGET_ANDROID) */

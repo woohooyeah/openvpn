@@ -487,6 +487,11 @@ cleanup:
     return ret;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 bool
 crypto_pem_decode(const char *name, struct buffer *dst, const struct buffer *src)
 {
@@ -518,7 +523,7 @@ crypto_pem_decode(const char *name, struct buffer *dst, const struct buffer *src
     uint8_t *dst_data = buf_write_alloc(dst, data_read_len);
     if (!dst_data)
     {
-        dmsg(D_CRYPT_ERRORS, "%s: dst too small (%i, needs %li)", __func__, BCAP(dst),
+        dmsg(D_CRYPT_ERRORS, "%s: dst too small (%zu, needs %li)", __func__, BCAP(dst),
              data_read_len);
         goto cleanup;
     }
@@ -528,6 +533,7 @@ crypto_pem_decode(const char *name, struct buffer *dst, const struct buffer *src
 cleanup:
     OPENSSL_free(name_read);
     OPENSSL_free(header_read);
+    OPENSSL_cleanse(data_read, data_read_len);
     OPENSSL_free(data_read);
     if (!BIO_free(bio))
     {
@@ -567,6 +573,15 @@ static evp_cipher_type *
 cipher_get(const char *ciphername)
 {
     ASSERT(ciphername);
+
+    /* "none" is a valid OpenVPN cipher name that OpenSSL does not know.
+     * Return NULL without asking OpenSSL: a failed EVP_CIPHER_fetch() would
+     * leave an "unsupported" entry on the error queue that the cipher_kt_*()
+     * callers never clear. */
+    if (strcmp("none", ciphername) == 0)
+    {
+        return NULL;
+    }
 
     ciphername = translate_cipher_name_from_openvpn(ciphername);
     return EVP_CIPHER_fetch(NULL, ciphername, NULL);
@@ -1295,6 +1310,10 @@ hmac_ctx_final(hmac_ctx_t *ctx, uint8_t *dst)
     EVP_MAC_final(ctx->ctx, dst, &in_hmac_len, in_hmac_len);
 }
 #endif /* if OPENSSL_VERSION_NUMBER < 0x30000000L */
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 int
 memcmp_constant_time(const void *a, const void *b, size_t size)

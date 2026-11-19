@@ -159,11 +159,8 @@ key_state_export_keying_material(struct tls_session *session, const char *label,
  * Print debugging information on SSL/TLS session negotiation.
  */
 
-#ifndef INFO_CALLBACK_SSL_CONST
-#define INFO_CALLBACK_SSL_CONST const
-#endif
 static void
-info_callback(INFO_CALLBACK_SSL_CONST SSL *s, int where, int ret)
+info_callback(const SSL *s, int where, int ret)
 {
     if (where & SSL_CB_LOOP)
     {
@@ -277,7 +274,14 @@ tls_ctx_set_options(struct tls_root_ctx *ctx, unsigned int ssl_flags)
     sslopt |= SSL_OP_NO_RENEGOTIATION;
 #endif
 
+#if defined(LIBRESSL_VERSION_NUMBER) && (defined(__GNUC__) || defined(__clang__))
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
     SSL_CTX_set_options(ctx->ctx, sslopt);
+#if defined(LIBRESSL_VERSION_NUMBER) && (defined(__GNUC__) || defined(__clang__))
+#pragma GCC diagnostic pop
+#endif
 
     if (!tls_ctx_set_tls_versions(ctx, ssl_flags))
     {
@@ -418,7 +422,6 @@ tls_ctx_restrict_ciphers(struct tls_root_ctx *ctx, const char *ciphers)
     }
 }
 
-#ifdef TLS1_3_VERSION
 static void
 convert_tls13_list_to_openssl(char *openssl_ciphers, size_t len, const char *ciphers)
 {
@@ -442,7 +445,6 @@ convert_tls13_list_to_openssl(char *openssl_ciphers, size_t len, const char *cip
         }
     }
 }
-#endif
 
 void
 tls_ctx_restrict_ciphers_tls13(struct tls_root_ctx *ctx, const char *ciphers)
@@ -521,14 +523,14 @@ tls_ctx_set_tls_groups(struct tls_root_ctx *ctx, const char *groups)
      * Also note that the code is wrong in the presence of OpenSSL3 providers.
      */
 
-    int groups_count = get_num_elements(groups, ':');
+    size_t groups_count = get_num_elements(groups, ':');
 
     int *glist;
     /* Allocate an array for them */
     ALLOC_ARRAY_CLEAR_GC(glist, int, groups_count, &gc);
 
     /* Parse allowed ciphers, getting IDs */
-    int glistlen = 0;
+    openssl_groups_len_t glistlen = 0;
     char *tmp_groups = string_alloc(groups, &gc);
 
     const char *token;
@@ -556,6 +558,7 @@ tls_ctx_set_tls_groups(struct tls_root_ctx *ctx, const char *groups)
         crypto_msg(M_FATAL, "Failed to set allowed TLS group list: %s", groups);
     }
     gc_free(&gc);
+
 #else  /* if OPENSSL_VERSION_NUMBER < 0x30000000L */
     if (!SSL_CTX_set1_groups_list(ctx->ctx, groups))
     {
@@ -1009,6 +1012,7 @@ tls_ctx_load_pkcs12(struct tls_root_ctx *ctx, const char *pkcs12_file, bool pkcs
                 }
             }
         }
+        sk_X509_pop_free(ca, X509_free);
     }
     else
     {
@@ -1029,7 +1033,11 @@ tls_ctx_load_pkcs12(struct tls_root_ctx *ctx, const char *pkcs12_file, bool pkcs
                 }
             }
         }
+        /* the certs now belong to ctx */
+        sk_X509_free(ca);
     }
+    X509_free(cert);
+    EVP_PKEY_free(pkey);
     return 0;
 }
 
@@ -1466,6 +1474,11 @@ get_rsa_padding_name(const int padding)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /**
  * Pass the input hash in 'dgst' to management and get the signature back.
  *
@@ -1710,6 +1723,11 @@ err:
     return 0;
 }
 #endif /* !defined(OPENSSL_NO_EC) */
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #endif /* ENABLE_MANAGEMENT && !HAVE_XKEY_PROVIDER */
 
 #ifdef ENABLE_MANAGEMENT
@@ -2099,6 +2117,11 @@ bio_write(BIO *bio, const uint8_t *data, int size, const char *desc)
  * to BIOs.
  */
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static void
 bio_write_post(const int status, struct buffer *buf)
 {
@@ -2109,6 +2132,10 @@ bio_write_post(const int status, struct buffer *buf)
         buf->len = 0;
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * Read from an OpenSSL BIO in non-blocking mode.
@@ -2123,13 +2150,12 @@ bio_read(BIO *bio, struct buffer *buf, const char *desc)
          * if the buffer is not empty */
         return 0;
     }
-    int len = buf_forward_capacity(buf);
 
     /*
      * BIO_read brackets most of the serious RSA
      * key negotiation number crunching.
      */
-    int i = BIO_read(bio, BPTR(buf), len);
+    int i = BIO_read(bio, BPTR(buf), (int)BCAP(buf));
 
     VALGRIND_MAKE_READABLE((void *)&i, sizeof(i));
 

@@ -422,6 +422,11 @@ socket_do_listen(socket_descriptor_t sd, const struct addrinfo *local, bool do_l
     gc_free(&gc);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 socket_descriptor_t
 socket_do_accept(socket_descriptor_t sd, struct link_socket_actual *act, const bool nowait)
 {
@@ -499,7 +504,6 @@ socket_listen_accept(socket_descriptor_t sd, struct link_socket_actual *act,
                      const struct addrinfo *local, bool do_listen,
                      bool nowait, volatile int *signal_received)
 {
-    struct gc_arena gc = gc_new();
     socket_descriptor_t new_sd = SOCKET_UNDEFINED;
 
     CLEAR(*act);
@@ -521,7 +525,6 @@ socket_listen_accept(socket_descriptor_t sd, struct link_socket_actual *act,
         get_signal(signal_received);
         if (*signal_received)
         {
-            gc_free(&gc);
             return sd;
         }
 
@@ -552,7 +555,6 @@ socket_listen_accept(socket_descriptor_t sd, struct link_socket_actual *act,
 
     tcp_connection_established(act);
 
-    gc_free(&gc);
     return new_sd;
 }
 
@@ -803,8 +805,6 @@ socket_frame_init(const struct frame *frame, struct link_socket *sock)
 static void
 resolve_bind_local(struct link_socket *sock)
 {
-    struct gc_arena gc = gc_new();
-
     /* resolve local address if undefined */
     if (!sock->info.lsa->bind_local)
     {
@@ -846,8 +846,6 @@ resolve_bind_local(struct link_socket *sock)
             sock->info.af = (sa_family_t)sock->info.lsa->bind_local->ai_family;
         }
     }
-
-    gc_free(&gc);
 }
 
 static void
@@ -2091,6 +2089,10 @@ link_socket_read_udp_posix(const struct link_socket *sock, struct buffer *buf,
     return buf->len;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #endif /* ifndef _WIN32 */
 
 /*
@@ -2673,7 +2675,6 @@ create_socket_unix(void)
 void
 socket_bind_unix(socket_descriptor_t sd, struct sockaddr_un *local, const char *prefix)
 {
-    struct gc_arena gc = gc_new();
     const mode_t orig_umask = umask(0);
 
     if (bind(sd, (struct sockaddr *)local, sizeof(struct sockaddr_un)))
@@ -2683,7 +2684,6 @@ socket_bind_unix(socket_descriptor_t sd, struct sockaddr_un *local, const char *
     }
 
     umask(orig_umask);
-    gc_free(&gc);
 }
 
 socket_descriptor_t

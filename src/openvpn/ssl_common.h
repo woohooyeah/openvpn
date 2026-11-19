@@ -457,6 +457,9 @@ struct tls_options
     size_t ekm_size;
 
     bool dco_enabled; /**< Whether keys have to be installed in DCO or not */
+
+    /** The app custom control protocols we should announce as supported */
+    const char *acc_protocols;
 };
 
 /** @addtogroup control_processor
@@ -730,6 +733,12 @@ struct tls_multi
     int dco_peer_id;
 
     dco_context_t *dco;
+
+    /** the protocols that are negotiated with the peer. */
+    char *acc_negotiated_protocols;
+
+    /** the maximum length of an ACC control channel message */
+    int acc_max_message_length;
 };
 
 /**  gets an item  of \c key_state objects in the
@@ -763,5 +772,25 @@ get_primary_key(const struct tls_multi *multi)
 {
     return &multi->session[TM_ACTIVE].key[KS_PRIMARY];
 }
+
+#ifdef ENABLE_MANAGEMENT
+/**
+ * Gets the \c key_state object that belongs to the management key id or
+ * return NULL if not found.
+ */
+static inline struct key_state *
+get_key_by_management_key_id(struct tls_multi *multi, unsigned int mda_key_id)
+{
+    for (int i = 0; i < KEY_SCAN_SIZE; ++i)
+    {
+        struct key_state *ks = get_key_scan(multi, i);
+        if (ks->mda_key_id == mda_key_id && ks->state > S_UNDEF)
+        {
+            return ks;
+        }
+    }
+    return NULL;
+}
+#endif
 
 #endif /* SSL_COMMON_H_ */

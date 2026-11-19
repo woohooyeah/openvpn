@@ -61,6 +61,14 @@ typedef int openssl_stack_size_t;
 typedef uint64_t openssl_opt_t;
 #endif
 
+/* SSL_CTX_set1_groups() length: size_t in LibreSSL and AWS-LC, passed to
+ * SSL_CTX_ctrl() as long by OpenSSL 1.1.1's macro */
+#if defined(LIBRESSL_VERSION_NUMBER) || defined(OPENSSL_IS_AWSLC)
+typedef size_t openssl_groups_len_t;
+#else
+typedef long openssl_groups_len_t;
+#endif
+
 
 /* Functionality missing in LibreSSL before 3.5 */
 #if defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x3050000fL
@@ -202,6 +210,11 @@ SSL_get0_group_name(SSL *s)
 /* Introduced in OpenSSL 3.6.0 */
 #ifndef EVP_CIPH_FLAG_ENC_THEN_MAC
 #define EVP_CIPH_FLAG_ENC_THEN_MAC 0x10000000
+#endif
+
+/* Introduced in OpenSSL 4.1.0 */
+#if OPENSSL_VERSION_NUMBER < 0x40100000
+#define ASN1_STRING_get_length (size_t)ASN1_STRING_length
 #endif
 
 #endif /* OPENSSL_COMPAT_H_ */

@@ -42,6 +42,7 @@
 #include "dco.h"
 #include "auth_token.h"
 #include "tun_afunix.h"
+#include "acc.h"
 
 #include "memdbg.h"
 
@@ -257,11 +258,11 @@ parse_incoming_control_channel_command(struct context *c, const struct buffer *b
     }
     else if (buf_string_match_head_str(buf, "INFO_PRE"))
     {
-        server_pushed_info(buf, 8);
+        peer_pushed_info(c, buf, 8);
     }
     else if (buf_string_match_head_str(buf, "INFO"))
     {
-        server_pushed_info(buf, 4);
+        peer_pushed_info(c, buf, 4);
     }
     else if (buf_string_match_head_str(buf, "CR_RESPONSE"))
     {
@@ -270,6 +271,10 @@ parse_incoming_control_channel_command(struct context *c, const struct buffer *b
     else if (buf_string_match_head_str(buf, "AUTH_PENDING"))
     {
         receive_auth_pending(c, buf);
+    }
+    else if (buf_string_match_head_str(buf, "ACC"))
+    {
+        receive_acc_message(c, buf);
     }
     else if (buf_string_match_head_str(buf, "EXIT"))
     {
@@ -280,6 +285,11 @@ parse_incoming_control_channel_command(struct context *c, const struct buffer *b
         msg(D_PUSH_ERRORS, "WARNING: Received unknown control message: %s", CBSTR(buf));
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 /*
  * Handle incoming configuration
@@ -744,14 +754,6 @@ check_session_timeout(struct context *c)
 static void
 process_coarse_timers(struct context *c)
 {
-    /* flush current packet-id to file once per 60
-     * seconds if --replay-persist was specified */
-    if (packet_id_persist_enabled(&c->c1.pid_persist)
-        && event_timeout_trigger(&c->c2.packet_id_persist_interval, &c->c2.timeval, ETT_DEFAULT))
-    {
-        packet_id_persist_save(&c->c1.pid_persist);
-    }
-
     /* Should we write timer-triggered status file */
     if (c->c1.status_output
         && event_timeout_trigger(&c->c1.status_output->et, &c->c2.timeval, ETT_DEFAULT))
@@ -1159,12 +1161,6 @@ process_incoming_link_part2(struct context *c, struct link_socket_info *lsi,
         }
 #endif
 
-#ifdef PACKET_TRUNCATION_CHECK
-        /* if (c->c2.buf.len > 1) --c->c2.buf.len; */
-        ipv4_packet_size_verify(BPTR(&c->c2.buf), BLEN(&c->c2.buf), TUNNEL_TYPE(c->c1.tuntap),
-                                "POST_DECRYPT", &c->c2.n_trunc_post_decrypt);
-#endif
-
         /*
          * Set our "official" outgoing address, since
          * if buf.len is non-zero, we know the packet
@@ -1347,11 +1343,6 @@ read_incoming_tun(struct context *c)
     }
 #endif /* ifdef _WIN32 */
 
-#ifdef PACKET_TRUNCATION_CHECK
-    ipv4_packet_size_verify(BPTR(&c->c2.buf), BLEN(&c->c2.buf), TUNNEL_TYPE(c->c1.tuntap),
-                            "READ_TUN", &c->c2.n_trunc_tun_read);
-#endif
-
     /* Was TUN/TAP interface stopped? */
     if (tuntap_stop(c->c2.buf.len))
     {
@@ -1527,12 +1518,6 @@ process_incoming_tun(struct context *c, struct link_socket *out_sock)
         unsigned int flags =
             PIPV4_PASSTOS | PIP_MSSFIX | PIPV4_CLIENT_NAT | PIPV6_ICMP_NOHOST_CLIENT;
         process_ip_header(c, flags, &c->c2.buf, out_sock);
-
-#ifdef PACKET_TRUNCATION_CHECK
-        /* if (c->c2.buf.len > 1) --c->c2.buf.len; */
-        ipv4_packet_size_verify(BPTR(&c->c2.buf), BLEN(&c->c2.buf), TUNNEL_TYPE(c->c1.tuntap),
-                                "PRE_ENCRYPT", &c->c2.n_trunc_pre_encrypt);
-#endif
     }
     if (c->c2.buf.len > 0)
     {
@@ -1932,11 +1917,6 @@ process_outgoing_tun(struct context *c, struct link_socket *in_sock)
 #endif
         dmsg(D_TUN_RW, "TUN WRITE [%d]", BLEN(&c->c2.to_tun));
 
-#ifdef PACKET_TRUNCATION_CHECK
-        ipv4_packet_size_verify(BPTR(&c->c2.to_tun), BLEN(&c->c2.to_tun), TUNNEL_TYPE(c->c1.tuntap),
-                                "WRITE_TUN", &c->c2.n_trunc_tun_write);
-#endif
-
 #ifdef _WIN32
         size = tun_write_win32(c->c1.tuntap, &c->c2.to_tun);
 #else
@@ -2049,6 +2029,10 @@ pre_select(struct context *c)
     /* Update random component of timeout */
     check_timeout_random_component(c);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 void
 multi_io_process_flags(struct context *c, struct event_set *es, struct link_socket *sock, const unsigned int flags)

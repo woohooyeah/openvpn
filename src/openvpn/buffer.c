@@ -66,8 +66,8 @@ alloc_buf(size_t size)
     {
         buf_size_error(size);
     }
-    buf.capacity = (int)size;
     buf.data = calloc(1, size);
+    buf.capacity = (int)size;
     check_malloc_return(buf.data);
 
     return buf;
@@ -83,14 +83,19 @@ alloc_buf_gc(size_t size, struct gc_arena *gc)
     {
         buf_size_error(size);
     }
+    buf.data = gc_malloc(size, false, gc);
     buf.capacity = (int)size;
-    buf.data = (uint8_t *)gc_malloc(size, false, gc);
     if (size)
     {
         *buf.data = 0;
     }
     return buf;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 struct buffer
 #ifdef BUF_INIT_TRACKING
@@ -100,15 +105,15 @@ clone_buf(const struct buffer *buf)
 #endif
 {
     struct buffer ret;
+    ret.data = malloc(buf->capacity);
     ret.capacity = buf->capacity;
+    check_malloc_return(ret.data);
     ret.offset = buf->offset;
     ret.len = buf->len;
 #ifdef BUF_INIT_TRACKING
     ret.debug_file = buf->debug_file;
     ret.debug_line = buf->debug_line;
 #endif
-    ret.data = (uint8_t *)malloc(buf->capacity);
-    check_malloc_return(ret.data);
     memcpy(BPTR(&ret), CBPTR(buf), BLENZ(buf));
     return ret;
 }
@@ -182,7 +187,7 @@ free_buf_gc(struct buffer *buf, struct gc_arena *gc)
         while (*e)
         {
             /* check if this object is the one we want to delete */
-            if ((uint8_t *)(*e + 1) == buf->data)
+            if ((uintptr_t)*e + sizeof(struct gc_entry) == (uintptr_t)buf->data)
             {
                 struct gc_entry *to_delete = *e;
 
@@ -229,17 +234,16 @@ buf_printf(struct buffer *buf, const char *format, ...)
     if (buf_defined(buf))
     {
         char *ptr = (char *)BEND(buf);
-        int cap = buf_forward_capacity(buf);
+        size_t cap = buf_forward_capacity(buf);
 
         if (cap > 1) /* can write more than \0 */
         {
-            int stat;
             va_list arglist;
             va_start(arglist, format);
-            stat = vsnprintf(ptr, cap, format, arglist);
+            int stat = vsnprintf(ptr, cap, format, arglist);
             va_end(arglist);
-            buf->len += (int)strlen(ptr);
-            if (stat >= 0 && stat < cap)
+            buf->len += (int)strnlen(ptr, cap);
+            if (stat >= 0 && stat < (int)cap)
             {
                 ret = true;
             }
@@ -252,11 +256,11 @@ void
 buf_puts(struct buffer *buf, const char *str)
 {
     char *ptr = (char *)BEND(buf);
-    int cap = buf_forward_capacity(buf);
+    size_t cap = buf_forward_capacity(buf);
     if (cap > 1) /* can write more than \0 */
     {
-        int str_len = (int)strlcpy(ptr, str, cap);
-        buf->len += (str_len < cap) ? str_len : cap - 1;
+        size_t str_len = strlcpy(ptr, str, cap);
+        buf->len += (str_len < cap) ? (int)str_len : (int)cap - 1;
     }
 }
 
@@ -270,7 +274,7 @@ buf_catrunc(struct buffer *buf, const char *str)
     if (buf_forward_capacity(buf) <= 1)
     {
         size_t len = strlen(str) + 1;
-        if (buf_size_valid(len) && (int)len < buf_forward_capacity_total(buf))
+        if (buf_size_valid(len) && len < buf_forward_capacity_total(buf))
         {
             memcpy(buf->data + buf->capacity - len, str, len);
         }
@@ -304,6 +308,10 @@ cleanup:
     }
     return ret;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * Garbage collection
@@ -439,6 +447,11 @@ gc_transfer(struct gc_arena *dest, struct gc_arena *src)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /*
  * Hex dump -- Output a binary buffer to a hex string and return it.
  */
@@ -538,6 +551,10 @@ buf_chomp(struct buffer *buf)
     buf_null_terminate(buf);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 const char *
 skip_leading_whitespace(const char *str)
 {
@@ -558,9 +575,9 @@ skip_leading_whitespace(const char *str)
  * like buf_null_terminate, but operate on strings
  */
 void
-string_null_terminate(char *str, int len, int capacity)
+string_null_terminate(char *str, size_t len, size_t capacity)
 {
-    ASSERT(len >= 0 && len <= capacity && capacity > 0);
+    ASSERT(len <= capacity && capacity > 0);
     if (len < capacity)
     {
         *(str + len) = '\0';
@@ -607,7 +624,7 @@ string_alloc(const char *str, struct gc_arena *gc)
 
         if (gc)
         {
-            ret = (char *)gc_malloc(n, false, gc);
+            ret = gc_malloc(n, false, gc);
         }
         else
         {
@@ -648,7 +665,7 @@ string_array_len(const char **array)
     int i = 0;
     if (array)
     {
-        while (array[i])
+        for (; *array; ++array)
         {
             ++i;
         }
@@ -661,13 +678,9 @@ print_argv(const char **p, struct gc_arena *gc, const unsigned int flags)
 {
     struct buffer out = alloc_buf_gc(256, gc);
     int i = 0;
-    for (;;)
+    for (; *p; ++p)
     {
-        const char *cp = *p++;
-        if (!cp)
-        {
-            break;
-        }
+        const char *cp = *p;
         if (i)
         {
             buf_printf(&out, " ");
@@ -695,7 +708,8 @@ string_alloc_buf(const char *str, struct gc_arena *gc)
 
     ASSERT(str);
 
-    buf_set_read(&buf, (uint8_t *)string_alloc(str, gc), strlen(str) + 1);
+    const char *copy = string_alloc(str, gc);
+    buf_set_read(&buf, (const uint8_t *)copy, strlen(str) + 1);
 
     if (buf.len > 0) /* Don't count trailing '\0' as part of length */
     {
@@ -720,6 +734,11 @@ buf_string_match_head_str(const struct buffer *src, const char *match)
     return memcmp(CBPTR(src), match, size) == 0;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 bool
 buf_string_compare_advance(struct buffer *src, const char *match)
 {
@@ -733,6 +752,10 @@ buf_string_compare_advance(struct buffer *src, const char *match)
         return false;
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 int
 buf_substring_len(const struct buffer *buf, int delim)
@@ -789,7 +812,7 @@ buf_parse(struct buffer *buf, const int delim, char *line, const int size)
     } while (c);
 
     line[size - 1] = '\0';
-    return !(eol && !strlen(line));
+    return !(eol && line[0] == '\0');
 }
 
 /*
@@ -960,6 +983,11 @@ char_class(const unsigned char c, const unsigned int flags)
     return false;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static inline bool
 char_inc_exc(const char c, const unsigned int inclusive, const unsigned int exclusive)
 {
@@ -967,14 +995,17 @@ char_inc_exc(const char c, const unsigned int inclusive, const unsigned int excl
            && !char_class((unsigned char)c, exclusive);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 bool
 string_class(const char *str, const unsigned int inclusive, const unsigned int exclusive)
 {
-    char c;
     ASSERT(str);
-    while ((c = *str++))
+    for (; *str; ++str)
     {
-        if (!char_inc_exc(c, inclusive, exclusive))
+        if (!char_inc_exc(*str, inclusive, exclusive))
         {
             return false;
         }
@@ -990,10 +1021,11 @@ bool
 string_mod(char *str, const unsigned int inclusive, const unsigned int exclusive,
            const char replace)
 {
-    const char *in = str;
-    bool ret = true;
-
     ASSERT(str);
+
+    char *out = str;
+    const char *in = out;
+    bool ret = true;
 
     while (true)
     {
@@ -1007,12 +1039,12 @@ string_mod(char *str, const unsigned int inclusive, const unsigned int exclusive
             }
             if (c)
             {
-                *str++ = c;
+                *out++ = c;
             }
         }
         else
         {
-            *str = '\0';
+            *out = '\0';
             break;
         }
     }
@@ -1103,19 +1135,14 @@ streqnull(const char *a, const char *b)
 char *
 string_substitute(const char *src, char from, char to, struct gc_arena *gc)
 {
-    char *ret = (char *)gc_malloc(strlen(src) + 1, true, gc);
+    char *ret = gc_malloc(strlen(src) + 1, true, gc);
     char *dest = ret;
-    char c;
 
-    do
+    for (; *src; ++src)
     {
-        c = *src++;
-        if (c == from)
-        {
-            c = to;
-        }
-        *dest++ = c;
-    } while (c);
+        *dest++ = (*src == from) ? to : *src;
+    }
+    *dest = '\0';
     return ret;
 }
 
@@ -1249,6 +1276,11 @@ buffer_list_peek(struct buffer_list *ol)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 void
 buffer_list_aggregate_separator(struct buffer_list *bl, const size_t max_len, const char *sep)
 {
@@ -1294,6 +1326,10 @@ buffer_list_aggregate_separator(struct buffer_list *bl, const size_t max_len, co
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 void
 buffer_list_aggregate(struct buffer_list *bl, const size_t max)
 {
@@ -1330,6 +1366,11 @@ buffer_list_advance(struct buffer_list *ol, ssize_t n)
         }
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 struct buffer_list *
 buffer_list_file(const char *fn, int max_line_len)
@@ -1410,3 +1451,7 @@ buf_extract_field(struct buffer *buf, char sep, struct gc_arena *gc)
     buf_advance(buf, field_len + 1);
     return field;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
